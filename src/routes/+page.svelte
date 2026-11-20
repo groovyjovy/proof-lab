@@ -112,7 +112,7 @@
 </script>
 
 {#if !session}
-	<main class="mx-auto mt-24 max-w-sm space-y-4 p-4">
+	<main class="mx-auto mt-24 max-w-sm space-y-4 p-4" data-app={app.kind}>
 		<h1 class="text-xl font-bold">WebGIS 認可の実験</h1>
 		<p class="text-sm text-gray-600">
 			{app.kind === 'ログイン中' ? 'ログインしています…' : 'デモユーザーを選んでログインします。'}
@@ -189,7 +189,14 @@
 		{/if}
 	</MapLibre>
 
-	<section class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow">
+	<section
+		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
+		data-app={app.kind}
+		data-screen={session.screen.kind}
+		data-role={session.me.role}
+		data-draft-key={draft?.key}
+		data-draft-points={draft?.points.length}
+	>
 		<div class="flex items-center justify-between gap-2">
 			<span>
 				{session.me.name}({session.me.role}{session.me.canEdit ? '' : '・編集不可'})

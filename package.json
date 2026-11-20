@@ -20,12 +20,14 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test": "vitest run",
+		"test:ui": "node --env-file=.env tests/ui/run.ts",
 		"setup:tlc": "mkdir -p tools && curl -fsSL -o tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
 		"db:up": "docker compose up -d --wait",
 		"db:reset": "node --env-file=.env scripts/db-reset.ts",
 		"db:auth-schema": "node --env-file=.env scripts/generate-auth-schema.ts"
 	},
 	"devDependencies": {
+		"@antithesishq/bombadil": "^0.7.10",
 		"@eslint/js": "^10.0.1",
 		"@mapbox/vector-tile": "^3.0.0",
 		"@sveltejs/adapter-node": "^6.0.0",

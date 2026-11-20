@@ -63,7 +63,7 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 | 認証 | Better Auth | セッションはDB保存。ロールはadminプラグインで始め、Phase 5でorganizationプラグインに移る |
 | DB | PostgreSQL + PostGIS | RLSで認可を強制する |
 | ベクタータイル | PostGISの `ST_AsMVT` など | 認可のかかった出口として扱う |
-| テスト | Vitest + fast-check、Playwright、UIの性質ベーステスト(Bombadil等) | |
+| テスト | Vitest + fast-check、Playwright、UIの性質ベーステスト(Bombadil) | |
 | モデル検査 | 自作の検査器(付録A)→ TLA+ | |
 | 静的解析 | ESLint(カスタムルール含む)、dependency-cruiser、TypeScript strict | |
 | エージェント | Claude Code + pstack-claude(pstackのClaude Code移植版) | |
@@ -111,19 +111,20 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 
 | 性質 | 1. 設計 | 2. 静的解析 | 3. 検証 |
 |---|---|---|---|
-| P1 | RLS、scopedDb | DBのimport制限 | 出口ごとの性質ベーステスト |
-| P2 | branded type `PublicFeature` | レスポンス型の制約 | 出口ごと(タイル含む)の性質ベーステスト |
+| P1 | RLS、scopedDb | DBのimport制限 | 出口ごとの性質ベーステスト、UIの性質テスト(ポップアップ) |
+| P2 | branded type `PublicFeature` | レスポンス型の制約 | 出口ごと(タイル含む)の性質ベーステスト、UIの性質テスト(ポップアップ) |
 | P3 | 保存時にDBの権限を確認 | — | モデル2、TLA+、E2E |
 | P4 | `version` による楽観的ロック | — | モデル1、E2E |
 | P5 | キャッシュキーに権限を含める/共有キャッシュ禁止 | — | 別ユーザーで同じタイルを取得 |
 | P6 | unionの状態機械 | `$state` は `src/routes/+page.svelte` だけ | `next` の性質テスト、モデル3、UIの性質テスト |
-| P7 | RLS(閲覧者には `public` の行だけ) | DBのimport制限 | 出口ごとの性質ベーステスト |
+| P7 | RLS(閲覧者には `public` の行だけ) | DBのimport制限 | 出口ごとの性質ベーステスト、UIの性質テスト(ポップアップ) |
 | P8 | RLSの `WITH CHECK`(書き込んだ後の行も検査する) | DBのimport制限 | ロール×市×作成/編集の性質ベーステスト |
 | P9 | Better Auth adminプラグインの権限確認 | — | 管理者以外の全ロールでの性質ベーステスト |
-| P10 | 作成リクエストの冪等キー(`request_key` の一意制約)、結果不明の下書きは直せない状態機械 | `fetch` / `setTimeout` は `src/lib/app/effects.ts` だけ | モデル3、同じキーで作成を繰り返す性質ベーステスト |
+| P10 | 作成リクエストの冪等キー(`request_key` の一意制約)、結果不明の下書きは直せない状態機械 | `fetch` / `setTimeout` は `src/lib/app/effects.ts` だけ | モデル3、同じキーで作成を繰り返す性質ベーステスト、UIの性質テスト(障害を起こすプロキシ越し) |
 
 P7〜P9は、機能マップ(`docs/feature-map.md`)を作ったときに、3.1の権限のうちどの性質も確かめていないものとして見つかった(2026-11-19)。
 P10は、Phase 1 の実装を画面で動かしたときに見つかった。タイムアウトした保存がサーバーではコミットされていて、保存し直すと二重になった(2026-11-20、`docs/model-checking.md`)。設計の層でも静的解析の層でも止められず、検証の層(実物を動かすこと)で初めて見つかった。pstack の Make Operations Idempotent に従って足した。
+UIの性質テストでは、ブラウザ自身も保存を送り直すことが分かった。使い回した接続が応答なしで切れると、Chrome は同じ POST を自動で送り直す。冪等キーがなければ、利用者が何もしなくても二重になる(2026-11-20、`docs/model-checking.md`)。
 
 ## 5. Better Auth で注目すべき挙動
 
@@ -177,7 +178,9 @@ API名は実装時に公式ドキュメントで確認する。
 - → モデル検査とTLA+は済み(2026-11-19)。モデル2は予想どおり、TLC の結果も自作検査器と一致した。結果は `docs/model-checking.md`
 - **性質ベーステスト**: ランダムなユーザー×bbox×出口で P1・P2・P5
 - **UIの性質ベーステスト**: Bombadil等でランダムな操作列を編集UIに流し P6
+- → 済み(2026-11-20)。`pnpm test:ui`(`tests/ui/`)。保存APIの前に障害を起こすプロキシを置き、本物の画面とサーバーで L1・P6・P10 と、画面に出る権限(P1・P2・P7、描画の権限)を確かめる。結果は `docs/model-checking.md`
 - **E2E**: モデル2の反例手順を再現し、cookie cache有効/無効で比べる(P3)。二つのブラウザで同時編集(P4)
+- → 未着手。P4 は、画面に既存の地物を編集する機能がないので、今はブラウザでは確かめられない(API の性質テストで確かめている)
 
 ### Phase 4: 証拠を機械で出せるようにする
 - **アプリ操作CLI**: `pnpm drive --role b-staff --scenario draw-and-save --screenshot` のように、ロールと操作を指定して実行し、スクリーンショットを保存する
@@ -216,8 +219,10 @@ API名は実装時に公式ドキュメントで確認する。
 - ログインは1回の通信で終える。サインインの応答に本人の情報(`role`・`canEdit`)が入っているので、`/api/me` は呼ばない。2段に分けると、2段目だけ失敗したときに Cookie と画面がずれる
 - 画面からサーバーへの参照は、dependency-cruiser ではなく ESLint(`@typescript-eslint/no-restricted-imports`)で禁止する。プロジェクトに入れた dependency-cruiser は `.svelte` を Svelte のコンパイラで JS にしてから依存を読むので、`import type` が消えて見えない(試して確かめた)。値の import はもともと SvelteKit がビルドで止める。ESLint は `.svelte` も `.ts` も、型の import まで見られる
 
+- UIの性質ベーステストは Bombadil(npm の `@antithesishq/bombadil`。macOS arm64 の実行ファイルが同梱されている)。`pnpm-workspace.yaml` の7日ルールで 0.7.10 を使う(0.8.0 は 2026-11-19 公開)
+- 保存中・結果不明はローカルでは一瞬で終わり、探索ではほとんど観測できない(2分で保存中を1回)。本番のコードには手を入れず、保存APIの前に障害を起こすプロキシ(`tests/ui/proxy.ts`)を置いた。モデル3のサーバーの4通りの結果を、本物のサーバーで起こす
+
 未決:
-- UIの性質ベーステストのツール選定(Bombadilの対応状況を確認)
 - pstack-claude の導入と、どのプレイブック(Feature / Bug fix など)を使うか
 
 ---

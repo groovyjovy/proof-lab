@@ -17,7 +17,7 @@
 | ポリゴンを描く(描画開始・点の追加・取消) | 管理者、市職員 | なし(画面の中だけ) | P6 |
 | 描いた地物を保存する | 管理者、市職員(自分の市だけ) | 保存API | P3, P6, P8, P10, L1 |
 | 保存の結果が分からないとき、再送する・やめる | 管理者、市職員 | 保存API | P10, L1 |
-| 既存の地物を編集して保存する | 管理者、市職員(自分の市だけ) | 保存API | P3, P4, P8, L1 |
+| 既存の地物を編集して保存する(API だけ。画面には編集機能がない) | 管理者、市職員(自分の市だけ) | 保存API | P3, P4, P8, L1 |
 | 職員の編集権限を剥奪する・ロールを変える | 管理者 | Better Auth の admin プラグイン | P3, P9 |
 
 市職員は、A市職員(a-staff)とB市職員(b-staff)のこと。
@@ -37,5 +37,5 @@
 
 ## テストとの対応
 
-性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。出口は `tests/properties/harness.ts` の `exits` に並べる。
+性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。本物の画面は `tests/ui/`(Bombadil)が、障害を起こすプロキシ越しにランダムに操作して確かめる。出口は `tests/properties/harness.ts` の `exits` に並べる。
 出口を足したら `exits` にも足す。P1・P2・P5 のテストは `exits` の全部に対して回る。
