@@ -17,7 +17,7 @@ const panel = extract((s) => {
 				points: Number(p.getAttribute('data-draft-points') ?? 0),
 				buttons: [...p.querySelectorAll('button')].map((b) => ({
 					text: b.textContent?.trim() ?? '',
-					disabled: b.disabled
+					disabled: b.matches(':disabled')
 				})),
 				citySelect: p.querySelector('select') !== null
 			}
@@ -35,7 +35,7 @@ const popup = extract((s) => {
 
 const enabledButtons = extract((s) =>
 	[...s.document.querySelectorAll('button')]
-		.filter((b) => !b.disabled && b.getBoundingClientRect().width > 0)
+		.filter((b) => !b.matches(':disabled') && b.getBoundingClientRect().width > 0)
 		.map((b) => {
 			const r = b.getBoundingClientRect();
 			return {
@@ -119,8 +119,13 @@ export const 保存中はログアウトできない = always(
 
 export const 結果不明では再送するかやめるしか選べない = always(
 	() =>
-		panel.current?.screen !== '結果不明' ||
+		panel.current?.app !== 'ログイン済み' ||
+		panel.current.screen !== '結果不明' ||
 		panel.current.buttons.map((b) => b.text).join('/') === 'ログアウト/再送する/やめる'
+);
+
+export const ログアウト中は何も押せない = always(
+	() => panel.current?.app !== 'ログアウト中' || panel.current.buttons.every((b) => b.disabled)
 );
 
 export const 閲覧者は描けない = always(() => role() !== 'viewer' || !has('ポリゴンを描く'));

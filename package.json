@@ -21,6 +21,7 @@
 		"format": "prettier --write .",
 		"test": "vitest run",
 		"test:ui": "node --env-file=.env tests/ui/run.ts",
+		"drive": "node --env-file=.env scripts/drive.ts",
 		"setup:tlc": "mkdir -p tools && curl -fsSL -o tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
 		"db:up": "docker compose up -d --wait",
 		"db:reset": "node --env-file=.env scripts/db-reset.ts",

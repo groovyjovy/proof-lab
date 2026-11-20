@@ -190,93 +190,95 @@
 	</MapLibre>
 
 	<section
-		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
+		class="absolute top-3 left-3 z-10 w-72 rounded bg-white/95 p-3 text-sm shadow"
 		data-app={app.kind}
 		data-screen={session.screen.kind}
 		data-role={session.me.role}
 		data-draft-key={draft?.key}
 		data-draft-points={draft?.points.length}
 	>
-		<div class="flex items-center justify-between gap-2">
-			<span>
-				{session.me.name}({session.me.role}{session.me.canEdit ? '' : '・編集不可'})
-			</span>
-			<button
-				class="text-xs text-gray-500 underline disabled:no-underline disabled:opacity-40"
-				disabled={app.kind === 'ログアウト中' || saving(session.screen)}
-				onclick={() => send({ type: 'ログアウトを押す' })}
-			>
-				{app.kind === 'ログアウト中' ? 'ログアウト中…' : 'ログアウト'}
-			</button>
-		</div>
-		{#if session.screen.kind === '閲覧'}
-			<p class="text-gray-600">地物をクリックすると属性を表示します。</p>
-			{#if session.me.canEdit}
+		<fieldset class="min-w-0 space-y-2 disabled:opacity-60" disabled={app.kind === 'ログアウト中'}>
+			<div class="flex items-center justify-between gap-2">
+				<span>
+					{session.me.name}({session.me.role}{session.me.canEdit ? '' : '・編集不可'})
+				</span>
 				<button
-					class="w-full rounded bg-green-600 px-3 py-1.5 text-white"
-					onclick={() => send({ type: '描画開始', key: crypto.randomUUID() })}
+					class="text-xs text-gray-500 underline disabled:no-underline disabled:opacity-40"
+					disabled={saving(session.screen)}
+					onclick={() => send({ type: 'ログアウトを押す' })}
 				>
-					ポリゴンを描く
+					{app.kind === 'ログアウト中' ? 'ログアウト中…' : 'ログアウト'}
 				</button>
-			{/if}
-		{:else if session.screen.kind === '描画中'}
-			{@const d = session.screen.draft}
-			<p>地図をクリックして点を追加({d.points.length} 点)</p>
-			{#if session.me.role === 'admin'}
-				<label class="flex items-center gap-2">
-					市
-					<select
-						class="rounded border px-1"
-						value={d.city}
-						onchange={(e) => send({ type: '市を選ぶ', city: e.currentTarget.value as City })}
+			</div>
+			{#if session.screen.kind === '閲覧'}
+				<p class="text-gray-600">地物をクリックすると属性を表示します。</p>
+				{#if session.me.canEdit}
+					<button
+						class="w-full rounded bg-green-600 px-3 py-1.5 text-white"
+						onclick={() => send({ type: '描画開始', key: crypto.randomUUID() })}
 					>
-						<option value="A">A市</option>
-						<option value="B">B市</option>
-					</select>
+						ポリゴンを描く
+					</button>
+				{/if}
+			{:else if session.screen.kind === '描画中'}
+				{@const d = session.screen.draft}
+				<p>地図をクリックして点を追加({d.points.length} 点)</p>
+				{#if session.me.role === 'admin'}
+					<label class="flex items-center gap-2">
+						市
+						<select
+							class="rounded border px-1"
+							value={d.city}
+							onchange={(e) => send({ type: '市を選ぶ', city: e.currentTarget.value as City })}
+						>
+							<option value="A">A市</option>
+							<option value="B">B市</option>
+						</select>
+					</label>
+				{/if}
+				<label class="flex items-center gap-2">
+					<input
+						type="checkbox"
+						checked={d.public}
+						onchange={(e) => send({ type: '公開を選ぶ', public: e.currentTarget.checked })}
+					/>公開する
 				</label>
+				<div class="flex gap-2">
+					<button
+						class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white disabled:opacity-40"
+						disabled={d.points.length < 3}
+						onclick={() => send({ type: '確定' })}
+					>
+						確定して保存
+					</button>
+					<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
+						取消
+					</button>
+				</div>
+				{#if session.screen.notice === '保存失敗'}
+					<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
+				{/if}
+			{:else if session.screen.kind === '結果不明'}
+				<p class="text-red-600">
+					保存されたか分かりません(応答が届きませんでした)。再送しても地物が二重にできることはありません。
+				</p>
+				<div class="flex gap-2">
+					<button
+						class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+						onclick={() => send({ type: '再送' })}
+					>
+						再送する
+					</button>
+					<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
+						やめる
+					</button>
+				</div>
+				{#if session.screen.notice === '再送失敗'}
+					<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
+				{/if}
+			{:else}
+				<p>{session.screen.kind}…</p>
 			{/if}
-			<label class="flex items-center gap-2">
-				<input
-					type="checkbox"
-					checked={d.public}
-					onchange={(e) => send({ type: '公開を選ぶ', public: e.currentTarget.checked })}
-				/>公開する
-			</label>
-			<div class="flex gap-2">
-				<button
-					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white disabled:opacity-40"
-					disabled={d.points.length < 3}
-					onclick={() => send({ type: '確定' })}
-				>
-					確定して保存
-				</button>
-				<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
-					取消
-				</button>
-			</div>
-			{#if session.screen.notice === '保存失敗'}
-				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
-			{/if}
-		{:else if session.screen.kind === '結果不明'}
-			<p class="text-red-600">
-				保存されたか分かりません(応答が届きませんでした)。再送しても地物が二重にできることはありません。
-			</p>
-			<div class="flex gap-2">
-				<button
-					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
-					onclick={() => send({ type: '再送' })}
-				>
-					再送する
-				</button>
-				<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
-					やめる
-				</button>
-			</div>
-			{#if session.screen.notice === '再送失敗'}
-				<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
-			{/if}
-		{:else}
-			<p>{session.screen.kind}…</p>
-		{/if}
+		</fieldset>
 	</section>
 {/if}

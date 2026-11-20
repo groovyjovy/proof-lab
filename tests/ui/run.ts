@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { restoreSeed } from '../../db/seed.ts';
+import { startDevServer } from '../../scripts/dev-server.ts';
 import { startProxy } from './proxy.ts';
 
 const timeLimit = process.argv[2] ?? '3m';
@@ -15,24 +16,12 @@ const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL }
 await admin.connect();
 await restoreSeed(admin);
 
-const server = spawn(
-	process.execPath,
-	['node_modules/vite/bin/vite.js', 'dev', '--port', upstream.port, '--strictPort'],
-	{ env: { ...process.env, BETTER_AUTH_URL: origin.href.slice(0, -1) }, stdio: 'ignore' }
-);
 const proxy = startProxy(Number(origin.port), upstream);
 const out = await mkdtemp(join(tmpdir(), 'bombadil-'));
+let stopServer = () => {};
 
 try {
-	for (let i = 0; ; i++) {
-		const status = await fetch(new URL('/api/features', origin)).then(
-			(r) => r.status,
-			() => 0
-		);
-		if (status === 401) break;
-		if (i > 120) throw new Error(`UI テスト用のサーバー ${upstream.href} が起動しなかった`);
-		await new Promise((r) => setTimeout(r, 500));
-	}
+	stopServer = await startDevServer(origin.origin, { port: upstream.port, quiet: true });
 
 	const bombadil = spawn(
 		'node_modules/.bin/bombadil',
@@ -108,7 +97,7 @@ try {
 	if (rows[0].duplicated) console.log('P10 が破れた: 同じ形の地物が二重にできた');
 	process.exitCode = exitCode || unobserved.length || rows[0].duplicated ? 1 : 0;
 } finally {
-	server.kill();
+	stopServer();
 	proxy.close();
 	await restoreSeed(admin);
 	await admin.end();
