@@ -1,0 +1,17 @@
+{
+	"extends": "$app/tsconfig",
+	"compilerOptions": {
+		"strict": true,
+		"types": ["$app/types", "node"]
+	},
+	"include": [
+		"src",
+		"model",
+		"tests",
+		"db",
+		"scripts",
+		"vite.config.ts",
+		"prettier.config.ts",
+		"eslint.config.ts"
+	]
+}

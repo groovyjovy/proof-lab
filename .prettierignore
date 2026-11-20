@@ -1,0 +1,12 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Miscellaneous
+/static/
+
+# 文書は手で整える。Prettier の Markdown 整形は表の桁揃えなどで goal.md の差分を大きくするため、対象から外している
+*.md

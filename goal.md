@@ -1,6 +1,6 @@
 # WebGIS 認可 × 形式手法 実験プロジェクト 引き継ぎメモ
 
-最終更新: 2026-11-19
+最終更新: 2026-11-20
 
 ## 0. 指針(経典)
 
@@ -59,8 +59,8 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 
 | 層 | 採用技術 | 備考 |
 |---|---|---|
-| フロント | SvelteKit + MapLibre GL JS | 編集UIは状態機械 |
-| 認証 | Better Auth | セッションはDB保存。ロールはadminまたはorganizationプラグイン |
+| フロント | SvelteKit + svelte-maplibre-gl(MapLibre GL JS) | ログインから保存まで、画面全体を1つの状態機械にする |
+| 認証 | Better Auth | セッションはDB保存。ロールはadminプラグインで始め、Phase 5でorganizationプラグインに移る |
 | DB | PostgreSQL + PostGIS | RLSで認可を強制する |
 | ベクタータイル | PostGISの `ST_AsMVT` など | 認可のかかった出口として扱う |
 | テスト | Vitest + fast-check、Playwright、UIの性質ベーステスト(Bombadil等) | |
@@ -99,9 +99,13 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 - **P4 ロストアップデートなし**: 二人とも保存を完了したら、両者の編集が残っている
 - **P5 キャッシュ分離**: あるユーザー向けのタイルが、別の権限のユーザーに配信されない
 - **P6 UIの排他**: どんな操作列でも、保存中に新しい描画は始まらない
+- **P7 公開範囲**: 閲覧者は、どの出口からも非公開の地物を受け取らない
+- **P8 書き込みの地域分離**: 市職員は、他市の地物を作成・編集できない(自分の市の地物を他市へ移すことも含む)。閲覧者は何も書き込めない
+- **P9 権限変更は管理者だけ**: 管理者以外は、ロールも編集権限も変えられない
+- **P10 保存の冪等性**: タイムアウトのあとに保存し直しても、地物は1つしかできない
 
 ### 活性
-- **L1** 保存中は、いつか必ず成功か失敗で終わる(タイムアウトがある)
+- **L1** 保存中は、いつか必ず終わる(成功・失敗・結果不明のどれか。タイムアウトがある)
 
 ### 性質とピラミッドの対応
 
@@ -112,7 +116,14 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 | P3 | 保存時にDBの権限を確認 | — | モデル2、TLA+、E2E |
 | P4 | `version` による楽観的ロック | — | モデル1、E2E |
 | P5 | キャッシュキーに権限を含める/共有キャッシュ禁止 | — | 別ユーザーで同じタイルを取得 |
-| P6 | unionの状態機械 | モード用の真偽値フラグ禁止 | `next` の性質テスト、UIの性質テスト |
+| P6 | unionの状態機械 | `$state` は `src/routes/+page.svelte` だけ | `next` の性質テスト、モデル3、UIの性質テスト |
+| P7 | RLS(閲覧者には `public` の行だけ) | DBのimport制限 | 出口ごとの性質ベーステスト |
+| P8 | RLSの `WITH CHECK`(書き込んだ後の行も検査する) | DBのimport制限 | ロール×市×作成/編集の性質ベーステスト |
+| P9 | Better Auth adminプラグインの権限確認 | — | 管理者以外の全ロールでの性質ベーステスト |
+| P10 | 作成リクエストの冪等キー(`request_key` の一意制約)、結果不明の下書きは直せない状態機械 | `fetch` / `setTimeout` は `src/lib/app/effects.ts` だけ | モデル3、同じキーで作成を繰り返す性質ベーステスト |
+
+P7〜P9は、機能マップ(`docs/feature-map.md`)を作ったときに、3.1の権限のうちどの性質も確かめていないものとして見つかった(2026-11-19)。
+P10は、Phase 1 の実装を画面で動かしたときに見つかった。タイムアウトした保存がサーバーではコミットされていて、保存し直すと二重になった(2026-11-20、`docs/model-checking.md`)。設計の層でも静的解析の層でも止められず、検証の層(実物を動かすこと)で初めて見つかった。pstack の Make Operations Idempotent に従って足した。
 
 ## 5. Better Auth で注目すべき挙動
 
@@ -141,11 +152,15 @@ API名は実装時に公式ドキュメントで確認する。
 - ルートハンドラには生の `db` を渡さず、`scopedDb(user)` だけを渡す
 - 非公開属性を除去した地物を `PublicFeature`(branded type)にし、レスポンスはその型しか受け取らない
 - 編集UIは unionの状態機械(付録B)
+- → 済み(2026-11-20)。P1〜P9・L1 の性質テストが実装に対してすべて緑。RLS(`db/migrations/002_feature.sql`)、`scopedDb`(`src/lib/server/authz/`)、地図画面(`src/routes/+page.svelte`)。Cookie cache の role で認可する版に書き換えると P3 だけが赤になり、モデル2の反例が実装でも再現した(`docs/model-checking.md`)
+
+- → 同日、編集UIだけでなくアプリ全体を1つの状態機械にした(`src/lib/app/machine.ts`)。実装の `next` をそのままモデル検査にかけ(モデル3)、保存中にログアウトすると L1 が破れる経路を見つけて直した(`docs/model-checking.md`)
 
 ### Phase 2: 静的解析で縛る(層2)
-- `no-restricted-imports`: DBモジュールは `$lib/server/authz` 以外からimport禁止。エラーメッセージに「scopedDbを使う。理由: P1」と書く
+- `no-restricted-imports`: DBモジュールは `#lib/server/authz` 以外からimport禁止。エラーメッセージに「scopedDbを使う。理由: P1」と書く
 - モードを表す真偽値の `$state`(`isSaving` など)を禁止するカスタムルール
 - `setTimeout` / `requestAnimationFrame` による場当たり的な修正を、許可した場所以外で禁止
+- → 一部済み(2026-11-20)。`$state` は `src/routes/+page.svelte` だけ、`fetch` / `setTimeout` / `setInterval` / `requestAnimationFrame` と `#lib/auth-client.ts` は `src/lib/app/effects.ts` だけ(`eslint.config.ts`)。画面の状態を1つの値にまとめたので、真偽値フラグの禁止は `$state` を1か所に限ることで代えた
 - dependency-cruiser で、クライアントからサーバーのコードを参照できないようにする
 - コメントは原則書かない。説明はlintのメッセージと型に置く
 - この時点で古い書き方・回避策が残っていれば消す
@@ -155,6 +170,7 @@ API名は実装時に公式ドキュメントで確認する。
   - モデル1: 同時編集(検証済み: 素朴な保存は反例あり、バージョン付きはOK)
   - モデル2: 権限剥奪。操作は「読み込む/編集する/保存する」「管理者が剥奪する」「キャッシュが更新される」。キャッシュで認可する設計では反例が出るはず、保存時にDBを確認する設計ではOKになるはず
 - **TLA+**: モデル2を書き直し、自作検査器の結果と比べる。L1(活性)も検査する
+- → モデル検査とTLA+は済み(2026-11-19)。モデル2は予想どおり、TLC の結果も自作検査器と一致した。結果は `docs/model-checking.md`
 - **性質ベーステスト**: ランダムなユーザー×bbox×出口で P1・P2・P5
 - **UIの性質ベーステスト**: Bombadil等でランダムな操作列を編集UIに流し P6
 - **E2E**: モデル2の反例手順を再現し、cookie cache有効/無効で比べる(P3)。二つのブラウザで同時編集(P4)
@@ -184,9 +200,17 @@ API名は実装時に公式ドキュメントで確認する。
 
 ## 7. 未決事項
 
-- RLSにユーザー情報を渡す方法(トランザクションごとの `set_config` か、ロールの切り替えか)
-- ロール管理: adminプラグインか、organizationプラグイン(A市・B市を組織にする)か
-- タイル配信: SvelteKitのエンドポイントか、別のタイルサーバーか(別サーバーにするとJWT検証の問題も試せる)
+決定済み(2026-11-19):
+- RLSにユーザー情報を渡す方法: トランザクションごとの `set_config`。ただし保存の認可に使う role は、Cookie cache ではなくDBから読む。Cookie cache 由来の role を渡すと、モデル2の反例と同じ構造になり、RLSがあってもP3が破れる(`docs/model-checking.md`)
+- ロール管理: adminプラグインで始める。organizationプラグインへの移行はPhase 5で扱う
+- タイル配信: SvelteKitのエンドポイント。別のタイルサーバーは、JWT検証の問題を試すときに足す
+
+決定済み(2026-11-20):
+- アプリ全体を1つの状態機械にする。範囲はクライアントの画面全体(ログイン画面も同じページに入れた)と、サーバーとのやりとり(保存の結果が分からない状態を含む)まで。副作用は `Effect` というデータで返し、`src/lib/app/effects.ts` だけが実行する
+- サーバー(ルートハンドラ、`scopedDb`、RLS)は状態機械にしない。リクエストごとに終わり、画面から見える状態を持たないので、包んでも減る分岐も不正な状態もない(pstack の Model the Domain: 分岐も不正な状態も減らさない抽象は疑う)
+- 作成は冪等にする(P10)。キーは描画を始めたときにクライアントで作り、結果が分からなくなった下書きは直せないようにする
+
+未決:
 - UIの性質ベーステストのツール選定(Bombadilの対応状況を確認)
 - pstack-claude の導入と、どのプレイブック(Feature / Bug fix など)を使うか
 
@@ -293,7 +317,7 @@ export function next(s: State, e: Event): State {
 
 ```svelte
 <script lang="ts">
-  import { next, type State, type Event } from "$lib/draw";
+  import { next, type State, type Event } from "#lib/draw.ts";
   let state: State = $state({ kind: "閲覧" });
   const send = (e: Event) => (state = next(state, e));
 </script>
@@ -310,6 +334,9 @@ export function next(s: State, e: Event): State {
 ```
 
 既知の課題: 「保存中」にタイムアウトのイベントがない(L1を満たさない)。Phase 1で追加する。
+TLC で反例を確認済み: 確定したあと応答が失われると、保存中から抜けない(`docs/model-checking.md`)。
+
+→ 2026-11-20 に、アプリ全体の状態機械 `src/lib/app/machine.ts` に置き換えた。この付録は最初の設計の記録として残す。
 
 ## 参考
 

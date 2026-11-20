@@ -1,0 +1,13 @@
+services:
+  db:
+    image: imresamu/postgis:17-3.5
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: proof
+    ports:
+      - '54329:5432'
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'postgres', '-d', 'proof']
+      interval: 2s
+      timeout: 3s
+      retries: 30
