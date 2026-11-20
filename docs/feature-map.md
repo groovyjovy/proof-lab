@@ -37,5 +37,5 @@
 
 ## テストとの対応
 
-性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。本物の画面は `tests/ui/`(Bombadil)が、障害を起こすプロキシ越しにランダムに操作して確かめる。出口は `tests/properties/harness.ts` の `exits` に並べる。
+性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。本物の画面は `tests/ui/`(Bombadil)が、障害を起こすプロキシ越しにランダムに操作して確かめる。決まった手順を本物のブラウザで流す E2E は `tests/e2e/` にある(P3)。出口は `tests/properties/harness.ts` の `exits` に並べる。
 出口を足したら `exits` にも足す。P1・P2・P5 のテストは `exits` の全部に対して回る。

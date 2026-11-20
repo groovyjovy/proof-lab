@@ -63,7 +63,7 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 | 認証 | Better Auth | セッションはDB保存。ロールはadminプラグインで始め、Phase 5でorganizationプラグインに移る |
 | DB | PostgreSQL + PostGIS | RLSで認可を強制する |
 | ベクタータイル | PostGISの `ST_AsMVT` など | 認可のかかった出口として扱う |
-| テスト | Vitest + fast-check、Playwright、UIの性質ベーステスト(Bombadil) | |
+| テスト | Vitest + fast-check、Playwright(ライブラリとして Vitest から呼ぶ)、UIの性質ベーステスト(Bombadil) | |
 | モデル検査 | 自作の検査器(付録A)→ TLA+ | |
 | 静的解析 | ESLint(カスタムルール含む)、dependency-cruiser、TypeScript strict | |
 | エージェント | Claude Code + pstack-claude(pstackのClaude Code移植版) | |
@@ -133,7 +133,7 @@ Cognitoのトークン(JWT)と同じ種類の問題が、Better Authでは **coo
 - `session.cookieCache` を有効にすると、セッション情報が署名付きCookieに `maxAge` 秒キャッシュされ、その間DBを見ない
 - ドキュメント上、取り消したセッションでも他の端末では `maxAge` が切れるまで有効なままになりうる
 - 対策: cookie cacheを無効にする、`maxAge` を短くする、重要な操作では `getSession` に `disableCookieCache: true` を渡す
-- ロール変更がキャッシュにいつ反映されるかは未確認 → **実験で確かめる**
+- ロール変更がキャッシュにいつ反映されるか → 測った(2026-11-20、`maxAge` 5分)。剥奪からの時間ではなく、**Cookie cache が作られてから `maxAge` が過ぎたあとの最初のリクエスト**で反映された。ログインの60秒後に剥奪すると、反映はログインから300〜315秒の間(剥奪から240〜255秒後)。15秒ごとに `get-session` を呼んでも、キャッシュは延びなかった。剥奪の直前にキャッシュが作られていれば、剥奪から最大 `maxAge` まで古いまま残る(この最悪の場合は測っておらず、上の結果からの推測)
 - JWTプラグインのJWTを別サービスが署名検証だけで受け入れる場合も、失効が遅れる
 
 → P3の反例の本命。モデルでは `serverRole`(DB)と `cachedRole`(Cookie/JWT)を別の状態として持つ。
@@ -180,7 +180,8 @@ API名は実装時に公式ドキュメントで確認する。
 - **UIの性質ベーステスト**: Bombadil等でランダムな操作列を編集UIに流し P6
 - → 済み(2026-11-20)。`pnpm test:ui`(`tests/ui/`)。保存APIの前に障害を起こすプロキシを置き、本物の画面とサーバーで L1・P6・P10 と、画面に出る権限(P1・P2・P7、描画の権限)を確かめる。結果は `docs/model-checking.md`
 - **E2E**: モデル2の反例手順を再現し、cookie cache有効/無効で比べる(P3)。二つのブラウザで同時編集(P4)
-- → 未着手。P4 は、画面に既存の地物を編集する機能がないので、今はブラウザでは確かめられない(API の性質テストで確かめている)
+- → P3 は済み(2026-11-20)。`tests/e2e/p3-revoke.test.ts`(`pnpm test` で回る)。描いている途中で剥奪すると、Cookie cache が古いままでも保存は拒否された。Cookie cache で認可する変異では、cookie cache 有効のときだけ保存が通った。結果は `docs/model-checking.md`
+- → P4 は未着手。画面に既存の地物を編集する機能がないので、今はブラウザでは確かめられない(API の性質テストで確かめている)
 
 ### Phase 4: 証拠を機械で出せるようにする
 - **アプリ操作CLI**: `pnpm drive --role b-staff --scenario draw-and-save --screenshot` のように、ロールと操作を指定して実行し、スクリーンショットを保存する
@@ -220,6 +221,7 @@ API名は実装時に公式ドキュメントで確認する。
 - 画面からサーバーへの参照は、dependency-cruiser ではなく ESLint(`@typescript-eslint/no-restricted-imports`)で禁止する。プロジェクトに入れた dependency-cruiser は `.svelte` を Svelte のコンパイラで JS にしてから依存を読むので、`import type` が消えて見えない(試して確かめた)。値の import はもともと SvelteKit がビルドで止める。ESLint は `.svelte` も `.ts` も、型の import まで見られる
 
 - UIの性質ベーステストは Bombadil(npm の `@antithesishq/bombadil`。macOS arm64 の実行ファイルが同梱されている)。`pnpm-workspace.yaml` の7日ルールで 0.7.10 を使う(0.8.0 は 2026-11-19 公開)
+- E2E は Playwright を、テストランナー(`@playwright/test`)ではなくライブラリ(`playwright-core` 1.65.0、7日ルール)として Vitest から呼ぶ。テスト用サーバー・シードの復元・管理者の操作(`tests/properties/harness.ts`)を性質テストと共有でき、ランナーが2つにならない。インストール済みの Chrome(`channel: 'chrome'`)を使うので、ブラウザはダウンロードしない。Phase 4 のアプリ操作CLIも同じライブラリで書ける
 - 保存中・結果不明はローカルでは一瞬で終わり、探索ではほとんど観測できない(2分で保存中を1回)。本番のコードには手を入れず、保存APIの前に障害を起こすプロキシ(`tests/ui/proxy.ts`)を置いた。モデル3のサーバーの4通りの結果を、本物のサーバーで起こす
 
 未決:

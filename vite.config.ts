@@ -32,7 +32,7 @@ export default defineConfig({
 				test: {
 					name: 'properties',
 					environment: 'node',
-					include: ['tests/properties/**/*.test.ts'],
+					include: ['tests/properties/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
 					globalSetup: ['tests/properties/global-setup.ts'],
 					setupFiles: ['tests/properties/setup.ts'],
 					fileParallelism: false,
