@@ -160,10 +160,14 @@ API名は実装時に公式ドキュメントで確認する。
 - `no-restricted-imports`: DBモジュールは `#lib/server/authz` 以外からimport禁止。エラーメッセージに「scopedDbを使う。理由: P1」と書く
 - モードを表す真偽値の `$state`(`isSaving` など)を禁止するカスタムルール
 - `setTimeout` / `requestAnimationFrame` による場当たり的な修正を、許可した場所以外で禁止
-- → 一部済み(2026-11-20)。`$state` は `src/routes/+page.svelte` だけ、`fetch` / `setTimeout` / `setInterval` / `requestAnimationFrame` と `#lib/auth-client.ts` は `src/lib/app/effects.ts` だけ(`eslint.config.ts`)。画面の状態を1つの値にまとめたので、真偽値フラグの禁止は `$state` を1か所に限ることで代えた
 - dependency-cruiser で、クライアントからサーバーのコードを参照できないようにする
 - コメントは原則書かない。説明はlintのメッセージと型に置く
 - この時点で古い書き方・回避策が残っていれば消す
+- → 済み(2026-11-20)。ルールはすべて `eslint.config.ts` にある。わざと違反させたファイルで、全部のルールが出ることを確かめた
+  - DB(`src/lib/server/db.ts`)を import できるのは、`src/lib/server/authz/` と Better Auth の設定(`src/lib/server/auth.ts`)だけ
+  - `$state` は `src/routes/+page.svelte` だけ。`fetch` / `setTimeout` / `setInterval` / `requestAnimationFrame` と `#lib/auth-client.ts` は `src/lib/app/effects.ts` だけ。画面の状態を1つの値にまとめたので、真偽値フラグの禁止は `$state` を1か所に限ることで代えた
+  - 画面のコードは `src/lib/server` を import できない(型も)。画面とサーバーで共有する型(`City`・`Me`)は `src/lib/domain.ts` に移した。dependency-cruiser ではなく ESLint で書いた(7章)
+  - テンプレートのコメントと、使われなくなった `/api/me`・`src/lib/index.ts` を消した。残したコメントは、モデルの性質の説明、SQL のスキーマの説明、`.env.example` の接続先の説明と、`+page.svelte` の `svelte-ignore`(初期値を一度だけ読むことの宣言)
 
 ### Phase 3: 検証の手段を用意する(層3)
 - **モデル検査**: 付録Aの検査器で
@@ -209,6 +213,8 @@ API名は実装時に公式ドキュメントで確認する。
 - アプリ全体を1つの状態機械にする。範囲はクライアントの画面全体(ログイン画面も同じページに入れた)と、サーバーとのやりとり(保存の結果が分からない状態を含む)まで。副作用は `Effect` というデータで返し、`src/lib/app/effects.ts` だけが実行する
 - サーバー(ルートハンドラ、`scopedDb`、RLS)は状態機械にしない。リクエストごとに終わり、画面から見える状態を持たないので、包んでも減る分岐も不正な状態もない(pstack の Model the Domain: 分岐も不正な状態も減らさない抽象は疑う)
 - 作成は冪等にする(P10)。キーは描画を始めたときにクライアントで作り、結果が分からなくなった下書きは直せないようにする
+- ログインは1回の通信で終える。サインインの応答に本人の情報(`role`・`canEdit`)が入っているので、`/api/me` は呼ばない。2段に分けると、2段目だけ失敗したときに Cookie と画面がずれる
+- 画面からサーバーへの参照は、dependency-cruiser ではなく ESLint(`@typescript-eslint/no-restricted-imports`)で禁止する。プロジェクトに入れた dependency-cruiser は `.svelte` を Svelte のコンパイラで JS にしてから依存を読むので、`import type` が消えて見えない(試して確かめた)。値の import はもともと SvelteKit がビルドで止める。ESLint は `.svelte` も `.ts` も、型の import まで見られる
 
 未決:
 - UIの性質ベーステストのツール選定(Bombadilの対応状況を確認)

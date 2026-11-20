@@ -1,4 +1,4 @@
-import type { City, Me } from '#lib/server/authz/index.ts';
+import type { City, Me } from '#lib/domain.ts';
 
 export type Point = [lng: number, lat: number];
 export type Draft = { key: string; city: City; public: boolean; points: Point[] };

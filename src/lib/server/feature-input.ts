@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
-import type { Bbox, City, FeatureEdit, Geometry, NewFeature } from './authz/index.ts';
+import type { City } from '#lib/domain.ts';
+import type { Bbox, FeatureEdit, Geometry, NewFeature } from './authz/index.ts';
 
 type Body = Record<string, unknown>;
 

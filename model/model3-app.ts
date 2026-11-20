@@ -1,6 +1,6 @@
 // モデル3: 実装の状態機械(src/lib/app/machine.ts の next)をそのまま、通信とサーバーの環境と一緒に検査する。
 // 書き直したモデルではないので、ここで出た反例は実装の反例。
-import type { Me } from '#lib/server/authz/index.ts';
+import type { Me } from '#lib/domain.ts';
 import {
 	next,
 	type Draft,

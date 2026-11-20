@@ -1,8 +1,8 @@
 import { error, json } from '@sveltejs/kit';
 import type { PoolClient } from 'pg';
+import type { City, Me } from '#lib/domain.ts';
 import { pool } from '../db.ts';
 
-export type City = 'A' | 'B';
 export type Bbox = [west: number, south: number, east: number, north: number];
 export type Geometry =
 	| { type: 'Point'; coordinates: [number, number] }
@@ -27,7 +27,6 @@ export type PublicFeature = {
 declare const publicTile: unique symbol;
 export type PublicTile = Uint8Array<ArrayBuffer> & { readonly [publicTile]: true };
 
-export type Me = { name: string; role: string | null; canEdit: boolean };
 export type NewFeature = {
 	key: string;
 	city: City;
@@ -157,8 +156,6 @@ export function requireActor(locals: App.Locals) {
 	if (!locals.actor) error(401, 'ログインが必要です');
 	return scopedDb(locals.actor.id);
 }
-
-export const meResponse = (me: Me) => json(me);
 
 export const featuresResponse = (features: readonly PublicFeature[]) =>
 	json({ type: 'FeatureCollection', features });

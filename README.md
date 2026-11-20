@@ -14,6 +14,7 @@ pnpm db:reset     # スキーマ・RLS・シードを作り直す
 pnpm dev          # http://localhost:5173 (同じページでデモユーザーを選んでログイン)
 pnpm setup:tlc    # TLA+ のモデル検査器を取得(初回だけ)
 pnpm test         # モデル検査 + 性質テスト(テスト用サーバーを 5199 番で自動起動)
+pnpm lint         # 静的解析(設計の縛り。ルールは eslint.config.ts)
 ```
 
 ## 文書

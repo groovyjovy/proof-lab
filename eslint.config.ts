@@ -8,6 +8,21 @@ import ts from 'typescript-eslint';
 
 const gitignorePath = path.resolve(import.meta.dirname, '.gitignore');
 
+const authClientOnlyInEffects = {
+	name: '#lib/auth-client.ts',
+	message: 'ログイン・ログアウトは machine.ts の Effect に足し、#lib/app/effects.ts から呼ぶ'
+};
+const dbOnlyInAuthz = {
+	regex: '(^|/)db\\.ts$',
+	message:
+		'DB は scopedDb(#lib/server/authz)を通して使う。理由: P1(接続ごとにユーザーを渡し、RLS で行を絞る)'
+};
+const serverOnlyInServer = {
+	regex: '(^|/)server/',
+	message:
+		'画面のコードは src/lib/server を import しない(型も)。共有する型は #lib/domain.ts に置く。理由: P1・P2(認可と出口の判断はサーバーにだけ置く)'
+};
+
 export default defineConfig(
 	includeIgnoreFile(gitignorePath),
 	js.configs.recommended,
@@ -17,11 +32,7 @@ export default defineConfig(
 	svelte.configs.prettier,
 	{
 		languageOptions: { globals: { ...globals.browser, ...globals.node } },
-		rules: {
-			// typescript-eslint strongly recommend that you do not use the no-undef lint rule on TypeScript projects.
-			// see: https://typescript-eslint.io/troubleshooting/faqs/eslint/#i-get-errors-from-the-no-undef-rule-about-global-variables-not-being-defined-even-though-there-are-no-typescript-errors
-			'no-undef': 'off'
-		}
+		rules: { 'no-undef': 'off' }
 	},
 	{
 		files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
@@ -61,21 +72,27 @@ export default defineConfig(
 			],
 			'no-restricted-imports': [
 				'error',
-				{
-					paths: [
-						{
-							name: '#lib/auth-client.ts',
-							message:
-								'ログイン・ログアウトは machine.ts の Effect に足し、#lib/app/effects.ts から呼ぶ'
-						}
-					]
-				}
+				{ paths: [authClientOnlyInEffects], patterns: [dbOnlyInAuthz] }
 			]
 		}
 	},
 	{
-		// Override or add rule settings here, such as:
-		// 'svelte/button-has-type': 'error'
-		rules: {}
+		files: ['src/lib/server/auth.ts', 'src/lib/server/authz/**'],
+		rules: { 'no-restricted-imports': ['error', { paths: [authClientOnlyInEffects] }] }
+	},
+	{
+		files: ['src/**/*.ts', 'src/**/*.svelte'],
+		ignores: [
+			'src/lib/server/**',
+			'src/**/*.server.ts',
+			'src/routes/**/+server.ts',
+			'src/**/*.test.ts'
+		],
+		rules: {
+			'@typescript-eslint/no-restricted-imports': [
+				'error',
+				{ patterns: [{ ...serverOnlyInServer, allowTypeImports: false }] }
+			]
+		}
 	}
 );

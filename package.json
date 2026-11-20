@@ -8,7 +8,6 @@
 		"node": "^26.12.1"
 	},
 	"imports": {
-		"#lib": "./src/lib/index.js",
 		"#lib/*": "./src/lib/*"
 	},
 	"scripts": {

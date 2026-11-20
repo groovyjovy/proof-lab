@@ -1,8 +1,51 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { save } from './effects.ts';
+import { run, save } from './effects.ts';
 
-vi.mock('#lib/auth-client.ts', () => ({ authClient: {} }));
-afterEach(() => vi.unstubAllGlobals());
+const signIn = vi.hoisted(() => vi.fn());
+vi.mock('#lib/auth-client.ts', () => ({ authClient: { signIn: { email: signIn } } }));
+afterEach(() => {
+	vi.unstubAllGlobals();
+	signIn.mockReset();
+});
+
+const logIn = () => run({ type: 'ログインする', email: 'a-staff@example.com' });
+
+test('ログインは1回の通信で終わる: サインインの応答から本人の情報を作り、ほかに問い合わせない', async () => {
+	const fetch = vi.fn();
+	vi.stubGlobal('fetch', fetch);
+	signIn.mockResolvedValue({
+		data: {
+			user: { name: 'A市職員', email: 'a-staff@example.com', role: 'a-staff', canEdit: true }
+		},
+		error: null
+	});
+	expect(await logIn()).toEqual({
+		type: 'ログイン成功',
+		me: { name: 'A市職員', role: 'a-staff', canEdit: true }
+	});
+	expect(fetch).not.toHaveBeenCalled();
+});
+
+test('サインインが通ったら、本人の情報が欠けていてもログイン成功にする(Cookie は付いているので)', async () => {
+	signIn.mockResolvedValue({ data: { user: { canEdit: null } }, error: null });
+	expect(await logIn()).toEqual({
+		type: 'ログイン成功',
+		me: { name: 'a-staff@example.com', role: null, canEdit: false }
+	});
+});
+
+test('サインインが拒否されたら、ログイン失敗', async () => {
+	signIn.mockResolvedValue({
+		data: null,
+		error: { status: 401, message: 'Invalid email or password' }
+	});
+	expect(await logIn()).toEqual({ type: 'ログイン失敗', message: 'Invalid email or password' });
+});
+
+test('サインインが例外を投げても、ログイン失敗を1つ返す', async () => {
+	signIn.mockRejectedValue(new TypeError('network'));
+	expect(await logIn()).toEqual({ type: 'ログイン失敗', message: '通信できませんでした' });
+});
 
 const draft = {
 	key: '00000000-0000-4000-8000-000000000000',

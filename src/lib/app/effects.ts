@@ -1,28 +1,21 @@
 import { authClient } from '#lib/auth-client.ts';
-import type { Me } from '#lib/server/authz/index.ts';
+import type { Me } from '#lib/domain.ts';
 import type { Draft, Effect, Event } from './machine.ts';
 
 export const saveTimeoutMs = 10_000;
 const demoPassword = 'password1234';
 
-const isMe = (v: unknown): v is Me =>
-	typeof v === 'object' &&
-	v !== null &&
-	'name' in v &&
-	typeof v.name === 'string' &&
-	'role' in v &&
-	(typeof v.role === 'string' || v.role === null) &&
-	'canEdit' in v &&
-	typeof v.canEdit === 'boolean';
+const meOf = (user: object, email: string): Me => ({
+	name: 'name' in user && typeof user.name === 'string' ? user.name : email,
+	role: 'role' in user && typeof user.role === 'string' ? user.role : null,
+	canEdit: 'canEdit' in user && user.canEdit === true
+});
 
 async function logIn(email: string): Promise<Event> {
 	try {
-		const { error } = await authClient.signIn.email({ email, password: demoPassword });
+		const { data, error } = await authClient.signIn.email({ email, password: demoPassword });
 		if (error) return { type: 'ログイン失敗', message: error.message ?? String(error.status) };
-		const me: unknown = await (await fetch('/api/me')).json();
-		return isMe(me)
-			? { type: 'ログイン成功', me }
-			: { type: 'ログイン失敗', message: 'ユーザー情報を読めませんでした' };
+		return { type: 'ログイン成功', me: meOf(data.user, email) };
 	} catch {
 		return { type: 'ログイン失敗', message: '通信できませんでした' };
 	}

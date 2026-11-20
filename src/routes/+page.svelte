@@ -15,7 +15,7 @@
 	import { page } from '$app/state';
 	import { run } from '#lib/app/effects.ts';
 	import { init, next, saving, type Event } from '#lib/app/machine.ts';
-	import type { City } from '#lib/server/authz/index.ts';
+	import type { City } from '#lib/domain.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
