@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { offers, receive, saving } from '#lib/app/machine.ts';
+import { notify, offers, receive, saving } from '#lib/app/machine.ts';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
@@ -33,6 +33,7 @@ test('モデル3 対照: 探索が全部の画面に届いている(性質が空
 
 const logoutWhileSaving: m3.Machine = {
 	receive,
+	notify,
 	offers: (s) =>
 		s.kind === 'ログイン済み' && saving(s.screen)
 			? {
@@ -71,6 +72,7 @@ test('モデル3 対照: 保存中もログアウトできると、ログアウ�
 
 const editWhileUnknown: m3.Machine = {
 	receive,
+	notify,
 	offers: (s) => {
 		if (s.kind !== 'ログイン済み' || s.screen.kind !== '結果不明') return offers(s);
 		const v = s.screen;
@@ -108,6 +110,7 @@ test('モデル3 対照: 結果不明のあとに図形を直せると、同じ�
 
 const dropSavedWhileResaving: m3.Machine = {
 	offers,
+	notify,
 	receive: (s, r) =>
 		s.kind === 'ログイン済み' && s.screen.kind === '再送中' && r.type === '保存成功'
 			? undefined
@@ -118,4 +121,23 @@ test('モデル3 対照: 再送中に届いた保存成功を受け取れない�
 	const result = check(m3.init, m3.stepsWith(dropSavedWhileResaving), m3.repliesAccepted);
 	expect(result).toMatchObject({ ok: false });
 	expect(result.ok || result.trace.slice(-2)).toEqual(['再送', 'k1をサーバーが保存し、成功が届く']);
+});
+
+const logoutOnNoticeWhileSaving: m3.Machine = {
+	offers,
+	receive,
+	notify: (s, n) =>
+		s.kind === 'ログイン済み'
+			? { state: { kind: '未ログイン', error: '本人違い' }, effects: [] }
+			: notify(s, n)
+};
+
+test('モデル3 対照: 保存中にタイルの本人違いが届いて画面を閉じると、保存の応答が捨てられる(応答を捨てない が破れる)', () => {
+	const result = check(m3.init, m3.stepsWith(logoutOnNoticeWhileSaving), m3.repliesAccepted);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace.slice(-3)).toEqual([
+		'確定',
+		'地図の本人が変わった',
+		'k1をサーバーが保存し、成功が届く'
+	]);
 });

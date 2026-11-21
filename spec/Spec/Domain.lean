@@ -12,6 +12,7 @@ inductive City where
   deriving DecidableEq, Repr
 
 structure Me where
+  id : String
   name : String
   role : Role
   canEdit : Bool

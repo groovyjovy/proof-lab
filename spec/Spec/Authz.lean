@@ -70,6 +70,15 @@ def allows : Source → World → Bool
   | .db, w => w.db
   | .cache, w => w.cache
 
+/-! ## 本人の一致(P11)
+
+Cookie は同じブラウザのすべての画面で共有され、ほかの画面でログインし直すと置き換わる。
+地図ライブラリは状態機械の外でタイルを取りに行くので、画面が表示している本人と、
+サーバーが認可に使うセッションの本人がずれうる。要求には画面が表示している本人(`as`)を書き、
+サーバーはセッションの本人と同じときだけ答える。 -/
+
+def served (requested session : String) : Bool := requested == session
+
 /-! ## 同時編集(P4)と作成の冪等性(P10) -/
 
 structure Row where

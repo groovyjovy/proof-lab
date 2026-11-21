@@ -6,6 +6,7 @@ export const saveTimeoutMs = 10_000;
 const demoPassword = 'password1234';
 
 const meOf = (user: object, email: string): Me => ({
+	id: 'id' in user && typeof user.id === 'string' ? user.id : '',
 	name: 'name' in user && typeof user.name === 'string' ? user.name : email,
 	role: roleOf('role' in user ? user.role : null),
 	canEdit: 'canEdit' in user && user.canEdit === true
@@ -30,11 +31,11 @@ async function logOut(): Promise<Reply> {
 	}
 }
 
-export async function save(d: Draft, timeoutMs = saveTimeoutMs): Promise<Reply> {
+export async function save(d: Draft, as: string, timeoutMs = saveTimeoutMs): Promise<Reply> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
-		const res = await fetch('/api/features', {
+		const res = await fetch(`/api/features?as=${encodeURIComponent(as)}`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({
@@ -47,6 +48,7 @@ export async function save(d: Draft, timeoutMs = saveTimeoutMs): Promise<Reply> 
 			signal: controller.signal
 		});
 		if (res.ok) return { type: '保存成功' };
+		if (res.status === 412) return { type: '本人が変わった' };
 		return { type: res.status < 500 ? '保存失敗' : '保存結果不明' };
 	} catch {
 		return { type: '保存結果不明' };
@@ -62,6 +64,6 @@ export function run(effect: Effect): Promise<Reply> {
 		case 'ログアウトする':
 			return logOut();
 		case '保存する':
-			return save(effect.draft);
+			return save(effect.draft, effect.as);
 	}
 }

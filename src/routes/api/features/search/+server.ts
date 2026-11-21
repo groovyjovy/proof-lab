@@ -4,5 +4,5 @@ import { parseBbox } from '#lib/server/feature-input.ts';
 
 export const GET: RequestHandler = async ({ locals, url }) =>
 	featuresResponse(
-		await requireActor(locals).searchFeatures(parseBbox(url.searchParams.get('bbox')))
+		await requireActor(locals, url).searchFeatures(parseBbox(url.searchParams.get('bbox')))
 	);

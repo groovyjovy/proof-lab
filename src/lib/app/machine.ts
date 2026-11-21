@@ -38,12 +38,15 @@ export type Reply =
 	| { type: 'ログアウト失敗' }
 	| { type: '保存成功' }
 	| { type: '保存失敗' }
-	| { type: '保存結果不明' };
+	| { type: '保存結果不明' }
+	| { type: '本人が変わった' };
+
+export type Notice = { type: '地図の本人が変わった' };
 
 export type Effect =
 	| { type: 'ログインする'; email: string }
 	| { type: 'ログアウトする' }
-	| { type: '保存する'; draft: Draft };
+	| { type: '保存する'; draft: Draft; as: string };
 
 export type Step = { state: State; effects: Effect[] };
 
@@ -123,14 +126,17 @@ function onScreen(s: LoggedIn): Offers {
 				公開を選ぶ: (e) => to({ ...v, draft: { ...d, public: e.public } }),
 				確定:
 					d.points.length >= 3
-						? () => to({ kind: '保存中', draft: d }, [{ type: '保存する', draft: d }])
+						? () => to({ kind: '保存中', draft: d }, [{ type: '保存する', draft: d, as: s.me.id }])
 						: undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
 		}
 		case '結果不明':
 			return {
-				再送: () => to({ kind: '再送中', draft: v.draft }, [{ type: '保存する', draft: v.draft }]),
+				再送: () =>
+					to({ kind: '再送中', draft: v.draft }, [
+						{ type: '保存する', draft: v.draft, as: s.me.id }
+					]),
 				取消: () => refreshed({ kind: '閲覧', selected: null })
 			};
 		case '保存中':
@@ -175,7 +181,21 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 						? { kind: '描画中', draft: v.draft, notice: '保存失敗' }
 						: { kind: '結果不明', draft: v.draft, notice: '再送失敗' }
 			});
+		case '本人が変わった':
+			return only({ kind: '未ログイン', error: identityChangedMessage });
 		default:
 			return undefined;
+	}
+}
+
+export const identityChangedMessage =
+	'ほかの画面で別の利用者としてログインしたため、この画面での操作を止めました。もう一度ログインしてください';
+
+export function notify(s: State, n: Notice): Step {
+	switch (n.type) {
+		case '地図の本人が変わった':
+			return s.kind === 'ログイン済み' && !saving(s.screen)
+				? only({ kind: '未ログイン', error: identityChangedMessage })
+				: only(s);
 	}
 }

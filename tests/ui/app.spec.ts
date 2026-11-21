@@ -19,7 +19,8 @@ const panel = extract((s) => {
 					text: b.textContent?.trim() ?? '',
 					disabled: b.matches(':disabled')
 				})),
-				citySelectEnabled: p.querySelector('select:enabled') !== null
+				citySelectEnabled: p.querySelector('select:enabled') !== null,
+				identityChanged: p.textContent?.includes('別の利用者としてログインした') ?? false
 			}
 		: null;
 });

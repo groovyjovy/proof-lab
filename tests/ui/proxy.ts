@@ -58,7 +58,8 @@ export function startProxy(port: number, upstream: URL) {
 	const server = createServer(async (req, res) => {
 		const reused = served.has(req.socket);
 		served.add(req.socket);
-		if (req.method !== 'POST' || req.url !== '/api/features') return forward(req, res);
+		const path = new URL(req.url ?? '/', 'http://proxy').pathname;
+		if (req.method !== 'POST' || path !== '/api/features') return forward(req, res);
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(chunk);
 		const body = Buffer.concat(chunks);

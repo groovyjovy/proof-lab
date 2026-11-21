@@ -37,11 +37,12 @@ def nullable : Option Json → Json
   | none => .null
 
 def meToJson (me : Me) : Json :=
-  Json.mkObj [("name", toJson me.name), ("role", toJson (roleName me.role)),
+  Json.mkObj [("id", toJson me.id), ("name", toJson me.name), ("role", toJson (roleName me.role)),
     ("canEdit", toJson me.canEdit)]
 
 def meOf? (j : Json) : Except String Me := do
-  return { name := ← j.getObjValAs? String "name"
+  return { id := ← j.getObjValAs? String "id"
+           name := ← j.getObjValAs? String "name"
            role := ← roleOf? (← j.getObjValAs? String "role")
            canEdit := ← j.getObjValAs? Bool "canEdit" }
 
@@ -75,7 +76,7 @@ def stateToJson : S → Json
 def effectToJson : Effect Json → Json
   | .login email => Json.mkObj [("type", "ログインする"), ("email", toJson email)]
   | .logout => Json.mkObj [("type", "ログアウトする")]
-  | .save d => Json.mkObj [("type", "保存する"), ("draft", draftToJson d)]
+  | .save d actor => Json.mkObj [("type", "保存する"), ("draft", draftToJson d), ("as", toJson actor)]
 
 def opKindName : OpKind → String
   | .pressLogin => "ログインを押す"
@@ -114,7 +115,13 @@ def replyOf? (j : Json) : Except String Reply := do
   | "保存成功" => return .saved
   | "保存失敗" => return .rejected
   | "保存結果不明" => return .unknown
+  | "本人が変わった" => return .identityChanged
   | t => throw s!"知らない応答: {t}"
+
+def noticeOf? (j : Json) : Except String Notice := do
+  match ← j.getObjValAs? String "type" with
+  | "地図の本人が変わった" => return .tilesIdentityChanged
+  | t => throw s!"知らない知らせ: {t}"
 
 /-- 差し出している操作の名前。差し出すかどうかは操作の中身によらない(`offer_depends_on_kind_only`)
     ので、種類ごとに1つの見本で調べれば足りる。 -/
@@ -128,8 +135,8 @@ def snapshot (s : S) (effects : List (Effect Json)) : Json :=
   Json.mkObj [("state", stateToJson s), ("effects", Json.arr (effects.map effectToJson).toArray),
     ("offers", toJson (offered s))]
 
-/-- 画面の状態機械: 初期状態から操作と応答を順に流し、1つずつの結果を返す。
-    差し出していない操作・受け取れない応答は `null` で、状態は変わらない。 -/
+/-- 画面の状態機械: 初期状態から操作・応答・知らせを順に流し、1つずつの結果を返す。
+    差し出していない操作・受け取れない応答は `null` で、状態は変わらない。知らせは必ず受け取る。 -/
 def runTrace (j : Json) : Except String Json := do
   let meJson ← j.getObjVal? "me"
   let me ← if meJson == .null then pure none else some <$> meOf? meJson
@@ -137,10 +144,11 @@ def runTrace (j : Json) : Except String Json := do
   let mut s := initial
   let mut steps : Array Json := #[]
   for e in ← (← j.getObjVal? "events").getArr? do
-    let step? ← match e.getObjVal? "op", e.getObjVal? "reply" with
-      | .ok op, _ => pure (perform s (← opOf? op))
-      | _, .ok r => pure (receive s (← replyOf? r))
-      | _, _ => throw "op か reply が要る"
+    let step? ← match e.getObjVal? "op", e.getObjVal? "reply", e.getObjVal? "notice" with
+      | .ok op, _, _ => pure (perform s (← opOf? op))
+      | _, .ok r, _ => pure (receive s (← replyOf? r))
+      | _, _, .ok n => pure (some (notify s (← noticeOf? n)))
+      | _, _, _ => throw "op か reply か notice が要る"
     match step? with
     | some st =>
       s := st.state

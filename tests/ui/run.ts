@@ -48,6 +48,8 @@ try {
 			entry.snapshots.find((s: { name: string | null }) => s.name === name)?.value;
 		const kind = [snapshot('panel')?.app, snapshot('panel')?.screen].filter(Boolean).join('/');
 		observed.set(kind, (observed.get(kind) ?? 0) + 1);
+		if (snapshot('panel')?.identityChanged)
+			observed.set('本人違いで止めた', (observed.get('本人違いで止めた') ?? 0) + 1);
 		if (snapshot('popup')) {
 			const popup = `ポップアップ/${snapshot('panel')?.role}`;
 			observed.set(popup, (observed.get(popup) ?? 0) + 1);

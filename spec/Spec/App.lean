@@ -78,11 +78,20 @@ inductive Reply where
   | saved
   | rejected
   | unknown
+  /-- 保存の要求に書いた本人と、サーバーのセッションの本人が違った(P11)。 -/
+  | identityChanged
+
+/-- 副作用とは関係なく届く知らせ。どの状態でも受け取る。
+    地図ライブラリは状態機械の外でタイルを取りに行くので、その失敗はここに届く。 -/
+inductive Notice where
+  /-- タイルの要求に書いた本人と、サーバーのセッションの本人が違った(P11)。 -/
+  | tilesIdentityChanged
 
 inductive Effect (P : Type) where
   | login (email : String)
   | logout
-  | save (draft : Draft P)
+  /-- 保存は、画面が本人として表示している利用者(`actor`)として送る(P11)。 -/
+  | save (draft : Draft P) (actor : String)
 
 structure Step (P F : Type) where
   state : State P F
@@ -133,7 +142,8 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .commit =>
     match s.screen with
-    | .drawing d _ => if 3 ≤ d.points.length then some (s.to (.saving d) [.save d]) else none
+    | .drawing d _ =>
+      if 3 ≤ d.points.length then some (s.to (.saving d) [.save d s.me.id]) else none
     | _ => none
   | .cancel =>
     match s.screen with
@@ -142,7 +152,7 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .resend =>
     match s.screen with
-    | .unknown d _ => some (s.to (.resaving d) [.save d])
+    | .unknown d _ => some (s.to (.resaving d) [.save d s.me.id])
     | _ => none
   | .pressLogin _ | .pressLogout => none
 
@@ -155,6 +165,9 @@ def perform : State P F → Op P F → Option (Step P F)
   | .loggedIn s, .pressLogout =>
     if s.screen.isSaving then none else some ⟨.loggingOut s, [.logout]⟩
   | .loggedIn s, op => onScreen s op
+
+def identityChangedMessage : String :=
+  "ほかの画面で別の利用者としてログインしたため、この画面での操作を止めました。もう一度ログインしてください"
 
 def onReply (s : Session P F) : Reply → Option (Step P F)
   | .saved =>
@@ -170,6 +183,10 @@ def onReply (s : Session P F) : Reply → Option (Step P F)
     | .saving d => some (s.to (.drawing d true))
     | .resaving d => some (s.to (.unknown d true))
     | _ => none
+  | .identityChanged =>
+    match s.screen with
+    | .saving _ | .resaving _ => some ⟨.loggedOut (some identityChangedMessage), []⟩
+    | _ => none
   | _ => none
 
 /-- 応答を受け取った遷移。受け取れなければ `none`(実装では例外にする)。 -/
@@ -180,5 +197,14 @@ def receive : State P F → Reply → Option (Step P F)
   | .loggingOut s, .logoutFailed => some ⟨.loggedIn s, []⟩
   | .loggedIn s, r => onReply s r
   | _, _ => none
+
+/-- 知らせの受け取り。どの状態でも受け取る(`Option` ではない)。
+    保存やログアウトの応答を待っている間は、その応答を捨てないように何もしない。
+    保存の要求にも本人を書いてあるので、本人が変わっていれば保存の応答で分かる。 -/
+def notify : State P F → Notice → Step P F
+  | .loggedIn s, .tilesIdentityChanged =>
+    if s.screen.isSaving then ⟨.loggedIn s, []⟩
+    else ⟨.loggedOut (some identityChangedMessage), []⟩
+  | s, .tilesIdentityChanged => ⟨s, []⟩
 
 end App

@@ -2,6 +2,7 @@
 // 書き直したモデルではないので、ここで出た反例は実装の反例。範囲を区切った全探索で、範囲なしの証明は spec/ にある。
 import type { Me } from '#lib/domain.ts';
 import {
+	notify,
 	offers,
 	perform,
 	receive,
@@ -29,10 +30,10 @@ export type World = {
 };
 
 const users: Record<string, Me> = {
-	'admin@example.com': { name: '管理者', role: 'admin', canEdit: true },
-	'a-staff@example.com': { name: 'A市職員', role: 'a-staff', canEdit: true },
-	'b-staff@example.com': { name: 'B市職員', role: 'b-staff', canEdit: true },
-	'viewer@example.com': { name: '閲覧者', role: 'viewer', canEdit: false }
+	'admin@example.com': { id: 'u-admin', name: '管理者', role: 'admin', canEdit: true },
+	'a-staff@example.com': { id: 'u-a', name: 'A市職員', role: 'a-staff', canEdit: true },
+	'b-staff@example.com': { id: 'u-b', name: 'B市職員', role: 'b-staff', canEdit: true },
+	'viewer@example.com': { id: 'u-viewer', name: '閲覧者', role: 'viewer', canEdit: false }
 };
 const points: Record<string, Point> = { p1: [0, 0] };
 const maxKeys = 2;
@@ -59,8 +60,8 @@ const savingKey = (app: State) => {
 	return v && saving(v) ? v.draft.key : null;
 };
 
-export type Machine = { offers: typeof offers; receive: typeof receive };
-export const machine: Machine = { offers, receive };
+export type Machine = { offers: typeof offers; receive: typeof receive; notify: typeof notify };
+export const machine: Machine = { offers, receive, notify };
 
 function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {}): World {
 	const broken = new Set(w.broken);
@@ -155,7 +156,8 @@ function deliveries(f: Effect, w: World): [string, Reply, Partial<World>][] {
 					{ type: '保存結果不明' },
 					{ stored, doubtful }
 				],
-				[`${key}の要求がサーバーに届かない`, { type: '保存結果不明' }, { doubtful }]
+				[`${key}の要求がサーバーに届かない`, { type: '保存結果不明' }, { doubtful }],
+				[`${key}の要求の本人がセッションと違う`, { type: '本人が変わった' }, {}]
 			];
 		}
 	}
@@ -163,6 +165,7 @@ function deliveries(f: Effect, w: World): [string, Reply, Partial<World>][] {
 
 // 利用者は、画面に差し出された操作だけを行う(画面はそれ以外の操作を送れない)。
 // 環境は、飛んでいる副作用のどれかに、ありうる応答のどれかを返す。受け取れない応答は「応答を捨てた」として記録する。
+// 地図ライブラリからの知らせ(タイルの本人違い)は、いつでも届く。
 export const stepsWith =
 	(m: Machine) =>
 	(w: World): Step<World>[] => {
@@ -180,6 +183,7 @@ export const stepsWith =
 				}
 			]);
 		}
+		out.push(['地図の本人が変わった', apply(w, m.notify(w.app, { type: '地図の本人が変わった' }))]);
 		w.inflight.forEach((f, i) => {
 			const inflight = w.inflight.filter((_, j) => j !== i);
 			for (const [label, reply, server] of deliveries(f, w)) {

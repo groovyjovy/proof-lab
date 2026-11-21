@@ -1,6 +1,16 @@
 import type { Me } from '#lib/domain.ts';
 import { run } from './effects.ts';
-import { init, offers, receive, type Offers, type Op, type OpOf, type Step } from './machine.ts';
+import {
+	init,
+	notify,
+	offers,
+	receive,
+	type Notice,
+	type Offers,
+	type Op,
+	type OpOf,
+	type Step
+} from './machine.ts';
 
 type Payload<T extends Op['type']> = Omit<OpOf<T>, 'type'>;
 export type Actions = {
@@ -28,7 +38,8 @@ export function createApp(me: Me | null) {
 		},
 		get actions() {
 			return actions;
-		}
+		},
+		notify: (n: Notice) => apply(notify(state, n))
 	};
 }
 

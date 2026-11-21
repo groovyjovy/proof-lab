@@ -1,5 +1,5 @@
 // 画面の状態図を、モデル3が全探索でたどった遷移から作る(手で描くと実装とずれる)。
-import { offers, receive, type Offers, type Op, type Step } from '#lib/app/machine.ts';
+import { notify, offers, receive, type Offers, type Op, type Step } from '#lib/app/machine.ts';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
@@ -26,7 +26,8 @@ export function stateDiagram() {
 		receive: (s, r) => {
 			const step = receive(s, r);
 			return step && record(m3.kindOf(s), r.type, step);
-		}
+		},
+		notify: (s, n) => record(m3.kindOf(s), n.type, notify(s, n))
 	};
 	check(m3.init, m3.stepsWith(recording), () => true);
 

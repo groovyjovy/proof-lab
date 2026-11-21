@@ -5,7 +5,7 @@ import Spec.App
 
 閉じた系 `Sys` は、画面の状態と、まだ応答が届いていない副作用の列。
 利用者は差し出された操作だけを行い(`Next.act`)、環境は飛んでいる副作用のどれかに、
-ありうる応答のどれかを返す(`Next.deliver`)。
+ありうる応答のどれかを返す(`Next.deliver`)。地図ライブラリからの知らせは、いつでも届く(`Next.notice`)。
 -/
 set_option linter.unusedSimpArgs false
 
@@ -25,9 +25,10 @@ inductive Answers : Effect P → Reply → Prop
   | loginFailed : Answers (.login email) (.loginFailed message)
   | logoutOk : Answers .logout .logoutOk
   | logoutFailed : Answers .logout .logoutFailed
-  | saved : Answers (.save d) .saved
-  | rejected : Answers (.save d) .rejected
-  | unknown : Answers (.save d) .unknown
+  | saved : Answers (.save d a) .saved
+  | rejected : Answers (.save d a) .rejected
+  | unknown : Answers (.save d a) .unknown
+  | identityChanged : Answers (.save d a) .identityChanged
 
 inductive Next : Sys P F → Sys P F → Prop
   | act {sys : Sys P F} {op : Op P F} {st : Step P F} :
@@ -36,6 +37,8 @@ inductive Next : Sys P F → Sys P F → Prop
       {st : Step P F} :
       sys.inflight = pre ++ e :: post → Answers e r → receive sys.app r = some st →
       Next sys ⟨st.state, pre ++ post ++ st.effects⟩
+  | notice {sys : Sys P F} {n : Notice} :
+      Next sys ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩
 
 inductive Reachable : Sys P F → Prop
   | init (me : Option Me) : Reachable ⟨init me, []⟩
@@ -50,8 +53,10 @@ def Screen.doubtful? : Screen P F → Option (Draft P)
   | .unknown d _ | .resaving d => some d
   | _ => none
 
-def Screen.inflight : Screen P F → List (Effect P)
-  | .saving d | .resaving d => [.save d]
+/-- 保存中なら、その下書きの保存が、表示している本人として飛んでいる。 -/
+def Session.inflight (s : Session P F) : List (Effect P) :=
+  match s.screen with
+  | .saving d | .resaving d => [.save d s.me.id]
   | _ => []
 
 def State.session? : State P F → Option (Session P F)
@@ -71,7 +76,7 @@ def DraftOk (s : Session P F) : Prop :=
 def Inv : Sys P F → Prop
   | ⟨.loggedOut _, fl⟩ => fl = []
   | ⟨.loggingIn email, fl⟩ => fl = [.login email]
-  | ⟨.loggedIn s, fl⟩ => fl = s.screen.inflight ∧ DraftOk s
+  | ⟨.loggedIn s, fl⟩ => fl = s.inflight ∧ DraftOk s
   | ⟨.loggingOut s, fl⟩ => fl = [.logout] ∧ s.screen.isSaving = false ∧ DraftOk s
 
 theorem singleton_split {pre post : List α} {e x : α} (h : pre ++ e :: post = [x]) :
@@ -84,7 +89,7 @@ theorem nil_split {pre post : List α} {e : α} (h : pre ++ e :: post = []) : Fa
   simp at h
 
 theorem inv_init (me : Option Me) : Inv (⟨init me, []⟩ : Sys P F) := by
-  cases me <;> simp [init, Inv, Screen.inflight, DraftOk, Screen.draft?]
+  cases me <;> simp [init, Inv, Session.inflight, DraftOk, Screen.draft?]
 
 theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
     (hinv : Inv sys) (h : perform sys.app op = some st) :
@@ -105,7 +110,7 @@ theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
     all_goals first
       | subst h
       | obtain ⟨hc, rfl⟩ := h
-    all_goals simp_all [Inv, Screen.inflight, DraftOk, Screen.draft?, Session.to,
+    all_goals simp_all [Inv, Session.inflight, DraftOk, Screen.draft?, Session.to,
       Session.refreshed, Screen.isSaving]
 
 theorem inv_deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} {r : Reply}
@@ -121,24 +126,36 @@ theorem inv_deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} 
     simp [Inv] at hinv
     obtain ⟨rfl, rfl, rfl⟩ := singleton_split hinv
     cases hans <;> simp [receive] at h <;> subst h <;>
-      simp [Inv, init, Screen.inflight, DraftOk, Screen.draft?]
+      simp [Inv, init, Session.inflight, DraftOk, Screen.draft?]
   | loggingOut s =>
     simp [Inv] at hinv
     obtain ⟨hfl, hsaving, hok⟩ := hinv
     obtain ⟨rfl, rfl, rfl⟩ := singleton_split hfl
     cases hans <;> simp [receive] at h <;> subst h <;> simp [Inv]
     obtain ⟨me, tiles, screen⟩ := s
-    cases screen <;> simp_all [Screen.inflight, Screen.isSaving]
+    cases screen <;> simp_all [Session.inflight, Screen.isSaving]
   | loggedIn s =>
     obtain ⟨me, tiles, screen⟩ := s
     simp [Inv] at hinv
     obtain ⟨hfl, hok⟩ := hinv
-    cases screen <;> simp [Screen.inflight] at hfl
+    cases screen <;> simp [Session.inflight] at hfl
     all_goals first
       | exact (nil_split hfl).elim
       | (obtain ⟨rfl, rfl, rfl⟩ := singleton_split hfl
          cases hans <;> simp [receive, onReply] at h <;> subst h <;>
-           simp_all [Session.to, Session.refreshed, Inv, Screen.inflight, DraftOk, Screen.draft?])
+           simp_all [Session.to, Session.refreshed, Inv, Session.inflight, DraftOk, Screen.draft?])
+
+theorem inv_notice {sys : Sys P F} {n : Notice} (hinv : Inv sys) :
+    Inv ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩ := by
+  obtain ⟨app, fl⟩ := sys
+  cases n
+  cases app with
+  | loggedIn s =>
+    obtain ⟨me, tiles, screen⟩ := s
+    simp only [Inv] at hinv
+    obtain ⟨rfl, hok⟩ := hinv
+    cases screen <;> simp [notify, Screen.isSaving, Inv, Session.inflight, hok]
+  | _ => simpa [notify] using hinv
 
 theorem reachable_inv {sys : Sys P F} (h : Reachable sys) : Inv sys := by
   induction h with
@@ -147,6 +164,7 @@ theorem reachable_inv {sys : Sys P F} (h : Reachable sys) : Inv sys := by
     cases hnext with
     | act h => exact inv_act ih h
     | deliver hfl hans h => exact inv_deliver ih hfl hans h
+    | notice => exact inv_notice ih
 
 /-! ## 性質 -/
 
@@ -175,7 +193,7 @@ theorem replies_accepted {sys : Sys P F} {e : Effect P} {r : Reply}
     obtain ⟨me, tiles, screen⟩ := s
     simp only [Inv] at hinv
     rw [hinv.1] at he
-    cases screen <;> simp [Screen.inflight] at he <;> subst he <;>
+    cases screen <;> simp [Session.inflight] at he <;> subst he <;>
       cases hans <;> simp [receive, onReply]
 
 /-- 飛んでいる副作用は高々1つ。だから応答に「どの副作用の応答か」を書かなくてよい。 -/
@@ -190,7 +208,7 @@ theorem single_flight {sys : Sys P F} (h : Reachable sys) : sys.inflight.length 
     obtain ⟨me, tiles, screen⟩ := s
     simp [Inv] at hinv
     obtain ⟨rfl, _⟩ := hinv
-    cases screen <;> simp [Screen.inflight]
+    cases screen <;> simp [Session.inflight]
 
 /-- 描画の権限: 到達できる状態では、下書きは編集できる人にしかなく、市職員の下書きは自分の市。 -/
 theorem draft_permission {sys : Sys P F} {s : Session P F} (h : Reachable sys)
@@ -213,7 +231,8 @@ theorem p6 (s : State P F) (key : String) (h : s.isSaving = true) :
     (`replies_accepted`)。残る「副作用はいつか必ず応答する」は実行時の責務で、
     src/lib/app/effects.ts のタイムアウトが受け持つ(証明ではなくテストで確かめる)。 -/
 theorem l1_exit {s : State P F} {d : Draft P} {r : Reply} {st : Step P F}
-    (hans : Answers (.save d) r) (h : receive s r = some st) : st.state.isSaving = false := by
+    {a : String} (hans : Answers (.save d a) r) (h : receive s r = some st) :
+    st.state.isSaving = false := by
   cases s with
   | loggedIn s =>
     obtain ⟨me, tiles, screen⟩ := s
@@ -229,7 +248,7 @@ def State.draft? (s : State P F) : Option (Draft P) := s.session?.bind (·.scree
 theorem p10_perform {s : State P F} {op : Op P F} {st : Step P F} {d : Draft P}
     (hd : s.doubtful? = some d) (h : perform s op = some st) :
     (st.state.doubtful? = some d ∨ st.state.draft? = none) ∧
-      ∀ d', Effect.save d' ∈ st.effects → d' = d := by
+      ∀ d' a, Effect.save d' a ∈ st.effects → d' = d := by
   cases s with
   | loggedIn sess =>
     obtain ⟨me, tiles, screen⟩ := sess
@@ -265,6 +284,34 @@ theorem p10_enter {sess : Session P F} {d : Draft P} {st : Step P F}
   obtain ⟨me, tiles, screen⟩ := sess
   rcases hs with hs | hs <;> simp at hs <;> subst hs <;> simp [receive, onReply] at h <;>
     subst h <;> simp [State.doubtful?, State.session?, Session.to, Screen.doubtful?]
+
+/-- P10 の状態機械の側(4): 知らせでも変わらない。 -/
+theorem p10_notify {s : State P F} {n : Notice} {d : Draft P} (hd : s.doubtful? = some d) :
+    (notify s n).state.doubtful? = some d ∨ (notify s n).state.draft? = none := by
+  cases n
+  cases s with
+  | loggedIn sess =>
+    obtain ⟨me, tiles, screen⟩ := sess
+    cases screen <;> simp_all [notify, Screen.isSaving, State.doubtful?, State.draft?,
+      State.session?, Screen.doubtful?]
+  | _ => simp_all [notify]
+
+/-- P11 の状態機械の側: 飛んでいる保存は、どれも画面が今表示している本人として送られている。
+    サーバーは、要求に書いた本人とセッションの本人が違えば答えない(`Authz.p11`)。 -/
+theorem requests_carry_identity {sys : Sys P F} {d : Draft P} {a : String} (h : Reachable sys)
+    (he : Effect.save d a ∈ sys.inflight) : ∃ s, sys.app = .loggedIn s ∧ a = s.me.id := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  cases app with
+  | loggedIn s =>
+    obtain ⟨me, tiles, screen⟩ := s
+    simp only [Inv] at hinv
+    rw [hinv.1] at he
+    cases screen <;> simp [Session.inflight] at he
+    all_goals exact ⟨_, rfl, he.2⟩
+  | loggedOut _ => simp only [Inv] at hinv; simp [hinv] at he
+  | loggingIn _ => simp only [Inv] at hinv; simp [hinv] at he
+  | loggingOut _ => simp only [Inv] at hinv; simp [hinv.1] at he
 
 /-- 差し出すかどうかは状態だけで決まり、操作の中身(座標・キー・市など)には左右されない。
     だから画面は「今押せるか」を状態から決められる。 -/

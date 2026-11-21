@@ -34,10 +34,15 @@ const visibleTo = (role: Role) => (f: (typeof seedFeatures)[number]) =>
 	role === 'admin' ||
 	(role === 'viewer' ? f.public : f.city === { 'a-staff': 'A', 'b-staff': 'B' }[role]);
 
-export async function openApp(browser: Browser, baseURL: string) {
-	const page = await browser.newPage({ baseURL, viewport });
-	await page.goto('/', { waitUntil: 'networkidle' });
+/** サーバーが描いた HTML のボタンは、ハイドレーションが終わるまで反応しない。終わったら body に印が付く。 */
+export async function open(page: Page) {
+	await page.goto('/');
+	await page.locator('body[data-hydrated]').waitFor({ state: 'attached' });
 	return driver(page);
+}
+
+export async function openApp(browser: Browser, baseURL: string) {
+	return open(await browser.newPage({ baseURL, viewport }));
 }
 
 export type App = ReturnType<typeof driver>;
@@ -76,7 +81,7 @@ export const driver = (page: Page) => {
 
 		async save(button = '確定して保存') {
 			const response = page.waitForResponse(
-				(r) => r.url().endsWith('/api/features') && r.request().method() === 'POST'
+				(r) => new URL(r.url()).pathname === '/api/features' && r.request().method() === 'POST'
 			);
 			await app.press(button);
 			return (await response).status();
@@ -118,7 +123,7 @@ export const driver = (page: Page) => {
 };
 
 async function hold(page: Page, path: string) {
-	const pattern = `**${path}`;
+	const pattern = (url: URL) => url.pathname === path;
 	let arrived: (route: Route) => void = () => {};
 	const arrival = new Promise<Route>((r) => (arrived = r));
 	await page.route(pattern, (route) =>

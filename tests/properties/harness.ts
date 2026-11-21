@@ -44,10 +44,18 @@ const adminQuery = (sql: string, params: unknown[] = []) =>
 		allowExitOnIdle: true
 	})).query(sql, params);
 
+/** 画面と同じく、データの要求には「誰として」(`as`)を書く(P11)。 */
+const boundToActor = (path: string) =>
+	path.startsWith('/api/features') || path.startsWith('/tiles/');
+
 class Browser {
 	#cookies = new Map<string, string>();
+	actorId: string | undefined;
 
-	async request(path: string, init: { method?: string; body?: unknown } = {}) {
+	async request(path: string, init: { method?: string; body?: unknown; as?: string | null } = {}) {
+		const as = init.as === undefined ? this.actorId : init.as;
+		if (boundToActor(path) && as !== null && as !== undefined)
+			path += `${path.includes('?') ? '&' : '?'}as=${encodeURIComponent(as)}`;
 		const headers = new Headers({ origin: baseUrl() });
 		if (init.body !== undefined) headers.set('content-type', 'application/json');
 		if (this.#cookies.size)
@@ -93,7 +101,7 @@ async function signIn(user: User) {
 		body: { email: `${user}@example.com`, password: seedPassword }
 	});
 	if (!res.ok) throw new Error(`${user} のログインが ${res.status} で失敗した`);
-	await res.arrayBuffer();
+	browser.actorId = (await res.json()).user.id;
 	return browser;
 }
 
@@ -213,3 +221,17 @@ export const applyEdit = (loaded: Loaded, editor: string): Loaded => ({
 });
 
 export const hasEdit = (loaded: Loaded, editor: string) => noteLines(loaded).includes(editor);
+
+/** `as` に別の本人を書いた(`null` なら書かない)要求の応答の状態コード。 */
+export const statusAs = async (
+	user: User,
+	path: string,
+	as: string | null,
+	body?: unknown
+): Promise<number> => {
+	const res = await (await browserOf(user)).request(path, { as, body });
+	await res.arrayBuffer();
+	return res.status;
+};
+
+export { userIdOf };

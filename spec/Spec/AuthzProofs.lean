@@ -95,4 +95,12 @@ theorem p10_server {α : Type} (store : List (String × α)) (key : String) (v :
     subst heq
     exact hnot x hmem
 
+/-- P11 画面とサーバーの本人の一致: サーバーが答えるのは、要求に書いた本人とセッションの本人が
+    同じときだけ。画面は、表示している本人を要求に書く(`App.requests_carry_identity`、
+    タイルの URL の `as`)。だから画面に出る応答は、表示している本人として認可されたもの。 -/
+theorem p11 (requested session : String) (h : served requested session = true) :
+    session = requested := by
+  simp [served] at h
+  exact h.symm
+
 end Authz

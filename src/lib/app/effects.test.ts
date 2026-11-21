@@ -15,13 +15,19 @@ test('ログインは1回の通信で終わる: サインインの応答から�
 	vi.stubGlobal('fetch', fetch);
 	signIn.mockResolvedValue({
 		data: {
-			user: { name: 'A市職員', email: 'a-staff@example.com', role: 'a-staff', canEdit: true }
+			user: {
+				id: 'user-a',
+				name: 'A市職員',
+				email: 'a-staff@example.com',
+				role: 'a-staff',
+				canEdit: true
+			}
 		},
 		error: null
 	});
 	expect(await logIn()).toEqual({
 		type: 'ログイン成功',
-		me: { name: 'A市職員', role: 'a-staff', canEdit: true }
+		me: { id: 'user-a', name: 'A市職員', role: 'a-staff', canEdit: true }
 	});
 	expect(fetch).not.toHaveBeenCalled();
 });
@@ -30,7 +36,7 @@ test('サインインが通ったら、本人の情報が欠けていてもロ�
 	signIn.mockResolvedValue({ data: { user: { canEdit: null } }, error: null });
 	expect(await logIn()).toEqual({
 		type: 'ログイン成功',
-		me: { name: 'a-staff@example.com', role: 'viewer', canEdit: false }
+		me: { id: '', name: 'a-staff@example.com', role: 'viewer', canEdit: false }
 	});
 });
 
@@ -65,23 +71,31 @@ const neverAnswers = (_: unknown, init: RequestInit) =>
 
 test('L1 保存中は必ず終わる(実行層の側): 応答が来なくても、タイムアウトで結果不明を返す', async () => {
 	vi.stubGlobal('fetch', neverAnswers);
-	expect(await save(draft, 50)).toEqual({ type: '保存結果不明' });
+	expect(await save(draft, 'u1', 50)).toEqual({ type: '保存結果不明' });
 });
 
 test.each([
 	[200, '保存成功'],
 	[403, '保存失敗'],
 	[409, '保存失敗'],
+	[412, '本人が変わった'],
 	[500, '保存結果不明'],
 	[502, '保存結果不明']
 ])('保存の応答 %i は %s(5xx はサーバーで保存されたか分からない)', async (status, type) => {
 	vi.stubGlobal('fetch', async () => new Response('{}', { status }));
-	expect(await save(draft, 1000)).toEqual({ type });
+	expect(await save(draft, 'u1', 1000)).toEqual({ type });
 });
 
 test('通信が切れたら結果不明(サーバーに届いたか分からない)', async () => {
 	vi.stubGlobal('fetch', async () => {
 		throw new TypeError('network');
 	});
-	expect(await save(draft, 1000)).toEqual({ type: '保存結果不明' });
+	expect(await save(draft, 'u1', 1000)).toEqual({ type: '保存結果不明' });
+});
+
+test('P11 保存は、画面が表示している本人として送る(要求の as)', async () => {
+	const fetch = vi.fn(async () => new Response('{}', { status: 200 }));
+	vi.stubGlobal('fetch', fetch);
+	await run({ type: '保存する', draft, as: 'user-1' });
+	expect(fetch).toHaveBeenCalledWith('/api/features?as=user-1', expect.anything());
 });

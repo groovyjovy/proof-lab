@@ -19,7 +19,8 @@ const replyTypes: Record<Reply['type'], true> = {
 	ログアウト失敗: true,
 	保存成功: true,
 	保存失敗: true,
-	保存結果不明: true
+	保存結果不明: true,
+	本人が変わった: true
 };
 const isReply = (e: Event): e is Reply => e.type in replyTypes;
 const next = (s: State, e: Event) =>
@@ -61,7 +62,7 @@ const events = fc
 	)
 	.map((chunks) => chunks.flat());
 
-const initial: State = init({ name: 'A市職員', role: 'a-staff', canEdit: true });
+const initial: State = init({ id: 'u-a', name: 'A市職員', role: 'a-staff', canEdit: true });
 const savingKey = (s: State) =>
 	s.kind === 'ログイン済み' && saving(s.screen) ? s.screen.draft.key : null;
 const draftKey = (s: State) =>

@@ -81,7 +81,12 @@ export function scopedDb(actorId: string) {
 				const { rows } = await c.query(
 					`select name, role, coalesce("canEdit", false) as "canEdit" from "user" where id = app_user_id()`
 				);
-				return { name: rows[0].name, role: roleOf(rows[0].role), canEdit: rows[0].canEdit };
+				return {
+					id: actorId,
+					name: rows[0].name,
+					role: roleOf(rows[0].role),
+					canEdit: rows[0].canEdit
+				};
 			}),
 
 		listFeatures: () =>
@@ -152,10 +157,17 @@ export function scopedDb(actorId: string) {
 	};
 }
 
-export function requireActor(locals: App.Locals) {
+/** 要求に書かれた本人(`as`)として認可する。ログインしている本人と違えば 412(P11)。 */
+export function requireActor(locals: App.Locals, url: URL) {
 	if (!locals.actor) error(401, 'ログインが必要です');
+	if (url.searchParams.get('as') !== locals.actor.id)
+		error(412, '要求に書いた本人(as)が、ログインしている本人と違う(P11)');
 	return scopedDb(locals.actor.id);
 }
+
+/** 画面を最初に描くときの本人。画面はこの本人を表示し、以後の要求の `as` に書く。 */
+export const whoAmI = (locals: App.Locals) =>
+	locals.actor ? scopedDb(locals.actor.id).me() : null;
 
 export const featuresResponse = (features: readonly PublicFeature[]) =>
 	json({ type: 'FeatureCollection', features });

@@ -3,17 +3,19 @@ import { afterAll, beforeAll, expect, test } from 'vitest';
 import { roles, type Me } from '#lib/domain.ts';
 import {
 	init,
+	notify,
 	offers,
 	perform,
 	receive,
 	type Effect,
+	type Notice,
 	type Op,
 	type Reply,
 	type State
 } from '#lib/app/machine.ts';
 import { startOracle, type Oracle } from '../../scripts/spec-oracle.ts';
 
-type Event = { op: Op } | { reply: Reply };
+type Event = { op: Op } | { reply: Reply } | { notice: Notice };
 type Snapshot = { state: State; effects: Effect[]; offers: string[] };
 
 let oracle: Oracle;
@@ -23,6 +25,7 @@ beforeAll(() => {
 afterAll(() => oracle.close());
 
 const me: fc.Arbitrary<Me> = fc.record({
+	id: fc.constantFrom('u-admin', 'u-a'),
 	name: fc.constantFrom('管理者', 'A市職員'),
 	role: fc.constantFrom(...roles),
 	canEdit: fc.boolean()
@@ -60,7 +63,8 @@ const reply: fc.Arbitrary<Reply> = fc.oneof(
 		{ type: 'ログアウト失敗' },
 		{ type: '保存成功' },
 		{ type: '保存失敗' },
-		{ type: '保存結果不明' }
+		{ type: '保存結果不明' },
+		{ type: '本人が変わった' }
 	)
 );
 const drawAndCommit = fc
@@ -75,9 +79,31 @@ const events = fc
 		fc.oneof(
 			{ arbitrary: op.map((op): Event[] => [{ op }]), weight: 3 },
 			{ arbitrary: reply.map((reply): Event[] => [{ reply }]), weight: 2 },
+			{
+				arbitrary: fc.constant<Event[]>([{ notice: { type: '地図の本人が変わった' } }]),
+				weight: 1
+			},
 			{ arbitrary: drawAndCommit, weight: 1 },
 			{
 				arbitrary: drawAndCommit.map((es): Event[] => [...es, { reply: { type: '保存結果不明' } }]),
+				weight: 1
+			},
+			{
+				arbitrary: fc
+					.tuple(key, at)
+					.map(([key, at]): Event[] => [
+						{ op: { type: '描画開始', key } },
+						{ op: { type: '地図をクリック', at, feature: null } },
+						{ op: { type: 'ログアウトを押す' } }
+					]),
+				weight: 1
+			},
+			{
+				arbitrary: drawAndCommit.map((es): Event[] => [
+					...es,
+					{ reply: { type: '保存結果不明' } },
+					{ op: { type: 'ログアウトを押す' } }
+				]),
 				weight: 1
 			}
 		),
@@ -99,7 +125,12 @@ function runImplementation(start: Me | null, es: Event[]) {
 		offers: offered(state)
 	});
 	const steps = es.map((e) => {
-		const step = 'op' in e ? perform(offers(s), e.op) : receive(s, e.reply);
+		const step =
+			'op' in e
+				? perform(offers(s), e.op)
+				: 'reply' in e
+					? receive(s, e.reply)
+					: notify(s, e.notice);
 		if (!step) return null;
 		s = step.state;
 		return snapshot(step.state, step.effects);

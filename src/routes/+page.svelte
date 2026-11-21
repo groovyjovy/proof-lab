@@ -1,7 +1,12 @@
 <script lang="ts">
 	import 'svelte-maplibre-gl/vite';
 	import 'maplibre-gl/dist/maplibre-gl.css';
-	import type { ExpressionSpecification, MapMouseEvent, StyleSpecification } from 'maplibre-gl';
+	import type {
+		ErrorEvent,
+		ExpressionSpecification,
+		MapMouseEvent,
+		StyleSpecification
+	} from 'maplibre-gl';
 	import {
 		CircleLayer,
 		FillLayer,
@@ -12,6 +17,7 @@
 		Popup,
 		VectorTileSource
 	} from 'svelte-maplibre-gl';
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { createApp } from '#lib/app/app.svelte.ts';
 	import type { City } from '#lib/domain.ts';
@@ -67,6 +73,7 @@
 
 	// svelte-ignore state_referenced_locally
 	const machine = createApp(data.me);
+	onMount(() => document.body.setAttribute('data-hydrated', ''));
 	const app = $derived(machine.state);
 	const actions = $derived(machine.actions);
 
@@ -75,7 +82,9 @@
 	);
 	const screen = $derived(session?.screen);
 	const draft = $derived(screen && screen.kind !== '閲覧' ? screen.draft : null);
-	const tilesUrl = $derived(`${page.url.origin}/tiles/{z}/{x}/{y}?v=${session?.tiles ?? 0}`);
+	const tilesUrl = $derived(
+		`${page.url.origin}/tiles/{z}/{x}/{y}?v=${session?.tiles ?? 0}&as=${encodeURIComponent(session?.me.id ?? '')}`
+	);
 	const sketch = $derived.by(() => {
 		const points = draft?.points ?? [];
 		return {
@@ -98,6 +107,11 @@
 			]
 		};
 	});
+
+	function onMapError(e: ErrorEvent) {
+		if ('status' in e.error && e.error.status === 412)
+			machine.notify({ type: '地図の本人が変わった' });
+	}
 
 	function onMapClick(e: MapMouseEvent) {
 		const [hit] = e.target.queryRenderedFeatures(e.point, { layers: clickable });
@@ -138,6 +152,7 @@
 		autoloadGlobalCss={false}
 		cursor={screen?.kind === '描画中' ? 'crosshair' : undefined}
 		onclick={onMapClick}
+		onerror={onMapError}
 	>
 		<NavigationControl />
 		<VectorTileSource tiles={[tilesUrl]} minzoom={8} maxzoom={16}>
