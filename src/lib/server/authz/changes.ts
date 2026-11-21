@@ -38,7 +38,7 @@ function createHub() {
 	};
 
 	return {
-		async subscribe(s: Subscriber) {
+		async subscribe(s: Subscriber): Promise<() => void> {
 			if (!client) await connect();
 			subscribers.add(s);
 			return () => void subscribers.delete(s);
@@ -64,13 +64,16 @@ const hub = (global.featureChanges ??= createHub());
  * 変更の流れ(Server-Sent Events)。本人(`db` の利用者)が読める地物の変更だけを流す(P1・P7。
  * 読めるかは、知らせが届いたときの RLS で決める)。届いた順を保つため、1つずつ確かめて流す。
  */
-export async function changesResponse(db: ReturnType<typeof scopedDb>) {
+export async function changesResponse(
+	db: Pick<ReturnType<typeof scopedDb>, 'getFeature'>,
+	subscribe = hub.subscribe
+) {
 	const encoder = new TextEncoder();
 	let unsubscribe = () => {};
 	const stream = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			let queue = Promise.resolve();
-			unsubscribe = await hub.subscribe({
+			unsubscribe = await subscribe({
 				deliver: (change) => {
 					queue = queue
 						.then(async () => {
