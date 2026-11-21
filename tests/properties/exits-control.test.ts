@@ -1,23 +1,17 @@
 import { expect, test } from 'vitest';
-import { exits, loadSeed, roles, type City, type Role, type Seed } from './harness.ts';
-
-const ownCity: Partial<Record<Role, City>> = { 'a-staff': 'A', 'b-staff': 'B' };
-
-const shouldSee = (role: Role, seed: Seed, ids: string[]) =>
-	ids.filter((id) =>
-		role === 'admin'
-			? true
-			: role === 'viewer'
-				? seed.isPublic(id)
-				: seed.cityOf(id) === ownCity[role]
-	);
+import { exits, loadSeed, roles } from './harness.ts';
+import { canRead, ownerMismatch } from './rules.ts';
 
 for (const exit of exits)
-	test(`対照(${exit.name}): 全範囲を取ると、各ロールに見えるべき地物がちょうど届く(性質テストが空振りしていないことの確認)`, async () => {
+	test(`仕様との突き合わせ(${exit.name}): 全範囲を取ると、仕様が読めるとする地物がちょうど届き、owner_name の出し方も仕様どおり(性質テストが空振りしていないことの確認も兼ねる)`, async () => {
 		const seed = await loadSeed();
 		const all = [...seed.featuresIn('A'), ...seed.featuresIn('B')];
 		for (const role of roles) {
-			const received = new Set((await exit.fetch(role, seed.extent)).map((f) => f.id));
-			expect([...received].sort()).toEqual(shouldSee(role, seed, all).sort());
+			const received = await exit.fetch(role, seed.extent);
+			// 境目をまたぐ地物は、どのタイルにも入って届く
+			expect([...new Set(received.map((f) => f.id))].sort()).toEqual(
+				all.filter((id) => canRead(role, id, seed)).sort()
+			);
+			expect(ownerMismatch(role, received)).toEqual([]);
 		}
 	});
