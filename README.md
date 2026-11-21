@@ -14,7 +14,8 @@ pnpm db:reset     # スキーマ・RLS・シードを作り直す
 pnpm dev          # http://localhost:5173 (同じページでデモユーザーを選んでログイン)
 pnpm setup:tlc    # TLA+ のモデル検査器を取得(初回だけ)
 pnpm test         # Lean の証明 + 仕様との突き合わせ + モデル検査 + 性質テスト + E2E(テスト用サーバーを 5199 番で自動起動)
-pnpm test:ui 3m   # 本物の画面をランダムに操作して性質を確かめる(Bombadil。5197・5198 番を使う)
+pnpm explore 3m   # フェーズの区切りに流す乱数の探索。性質テストを新しい種で流し、本物の画面をランダムに操作する(Bombadil。5197・5198 番を使う)
+pnpm test:ui 3m   # 本物の画面の探索だけを流す
 pnpm drive --scenario tour --screenshot   # 画面の全状態を通ってスクリーンショットを撮る(5196 番を使う。evidence/ に出る)
 pnpm lint         # 静的解析(設計の縛り。ルールは eslint.config.ts)
 pnpm spec:sql     # 認可の SQL 関数を Lean の仕様から書き出す(spec/Spec/Authz.lean を変えたら)

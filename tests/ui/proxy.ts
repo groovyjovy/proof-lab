@@ -26,42 +26,19 @@ const schedule: [number, Fault][] = [
 // 更新(PUT)には、ほかの人の更新が先に割り込む障害も起こす(1つのブラウザの探索では競合が起きないため)
 const updateSchedule: [number, Fault][] = [...schedule, [20, 'ほかの人の更新が割り込む']];
 
-/**
- * 種と要求の名前から、0 以上 1 未満の数を決める(FNV-1a)。同じ種なら、要求が届く順番が変わっても、
- * 同じ要求(たとえば「キー k1 の2回目の保存」)には同じ数を返す。探索で見つけた現象を同じ種で再現するため。
- */
-function chance(seed: number, ...parts: (string | number)[]) {
-	let h = 0x811c9dc5;
-	for (const c of `${seed}|${parts.join('|')}`) h = Math.imul(h ^ c.codePointAt(0)!, 0x01000193);
-	return (h >>> 0) / 2 ** 32;
-}
-
-const pick = (r: number, from: [number, Fault][]): Fault => {
-	let rest = r * from.reduce((sum, [w]) => sum + w, 0);
-	for (const [w, fault] of from) if ((rest -= w) < 0) return fault;
+const pick = (from: [number, Fault][]): Fault => {
+	let r = Math.random() * from.reduce((sum, [w]) => sum + w, 0);
+	for (const [w, fault] of from) if ((r -= w) < 0) return fault;
 	return from[0][1];
 };
 
 /** `interfere` は、ほかの人の更新を1つ効かせる(版を上げ、そのキーも記録する)。 */
-export function startProxy(
-	port: number,
-	upstream: URL,
-	seed: number,
-	interfere: (id: number) => Promise<void>
-) {
+export function startProxy(port: number, upstream: URL, interfere: (id: number) => Promise<void>) {
 	const counts = new Map<Fault, number>(faults.map((f) => [f, 0]));
 	const log: { at: number; fault: Fault; key: string; reused: boolean }[] = [];
 	/** 範囲の検索: 本人(as)、ブラウザが送った時刻、ブラウザに応答を返した時刻 */
 	const searches: { as: string; sent: number; done: number }[] = [];
-	// 同じ要求の何回目か(再送や、同じ範囲の検索を区別する)
-	const attempts = new Map<string, number>();
-	const nth = (name: string) => {
-		const n = (attempts.get(name) ?? 0) + 1;
-		attempts.set(name, n);
-		return n;
-	};
-	const delay = (...parts: (string | number)[]) =>
-		chance(seed, ...parts, 'あるか') < 0.3 ? 0 : 300 + chance(seed, ...parts, '長さ') * 2000;
+	const delay = () => (Math.random() < 0.3 ? 0 : 300 + Math.random() * 2000);
 	const served = new WeakSet<object>();
 
 	const forward = (
@@ -97,10 +74,11 @@ export function startProxy(
 			// サーバーに届く前と、サーバーが答えたあとの両方で遅らせる。応答は送った順に届かなくなり、
 			// ログインし直したあとに、前の本人として送った検索の応答(か、本人違いの 412)が届く
 			counts.set('検索の応答が遅れる', (counts.get('検索の応答が遅れる') ?? 0) + 1);
-			const params = new URL(req.url ?? '/', 'http://proxy').searchParams;
-			const entry = { as: params.get('as') ?? '', sent: Date.now(), done: 0 };
-			const name = `検索 ${entry.as} ${params.get('bbox')}`;
-			const n = nth(name);
+			const entry = {
+				as: new URL(req.url ?? '/', 'http://proxy').searchParams.get('as') ?? '',
+				sent: Date.now(),
+				done: 0
+			};
 			searches.push(entry);
 			return void setTimeout(
 				() =>
@@ -108,25 +86,18 @@ export function startProxy(
 						const chunks: Buffer[] = [];
 						up.on('data', (c: Buffer) => chunks.push(c));
 						up.on('end', () =>
-							setTimeout(
-								() => {
-									entry.done = Date.now();
-									res.writeHead(up.statusCode ?? 502, up.headers).end(Buffer.concat(chunks));
-								},
-								delay(name, n, '答えたあと')
-							)
+							setTimeout(() => {
+								entry.done = Date.now();
+								res.writeHead(up.statusCode ?? 502, up.headers).end(Buffer.concat(chunks));
+							}, delay())
 						);
 					}),
-				delay(name, n, '届く前')
+				delay()
 			);
 		}
-		if (req.method === 'GET' && one) {
-			const name = `読み込み ${one[1]}`;
-			const n = nth(name);
-			if (chance(seed, name, n, 'あるか') < 0.5) {
-				counts.set('読み込みが遅れる', (counts.get('読み込みが遅れる') ?? 0) + 1);
-				return void setTimeout(() => forward(req, res), 500 + chance(seed, name, n, '長さ') * 1500);
-			}
+		if (req.method === 'GET' && one && Math.random() < 0.5) {
+			counts.set('読み込みが遅れる', (counts.get('読み込みが遅れる') ?? 0) + 1);
+			return void setTimeout(() => forward(req, res), 500 + Math.random() * 1500);
 		}
 		const creating = req.method === 'POST' && path === '/api/features';
 		const updating = req.method === 'PUT' && one !== null;
@@ -134,17 +105,14 @@ export function startProxy(
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(chunk);
 		const body = Buffer.concat(chunks);
-		const key = String(JSON.parse(String(body)).key);
-		const name = `${updating ? '更新' : '保存'} ${key}`;
-		const n = nth(name);
-		const fault = pick(chance(seed, name, n, '障害'), updating ? updateSchedule : schedule);
+		const fault = pick(updating ? updateSchedule : schedule);
 		counts.set(fault, (counts.get(fault) ?? 0) + 1);
-		log.push({ at: Date.now(), fault, key, reused });
+		log.push({ at: Date.now(), fault, key: String(JSON.parse(String(body)).key), reused });
 		switch (fault) {
 			case '遅れて成功':
 				return void setTimeout(
 					() => forward(req, res, undefined, body),
-					500 + chance(seed, name, n, '長さ') * 1500
+					500 + Math.random() * 1500
 				);
 			case '保存したが接続が切れる':
 				return forward(
