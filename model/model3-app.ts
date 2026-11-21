@@ -6,6 +6,7 @@ import {
 	offers,
 	perform,
 	receive,
+	busy,
 	saving,
 	type Draft,
 	type Effect,
@@ -26,6 +27,10 @@ export type World = {
 	doubtful: string[];
 	keysUsed: number;
 	loginsUsed: number;
+	/** 編集できる地物(id 1)のサーバーの行。版と、効かせた更新のキー(P12) */
+	row: { version: number; applied: string[] };
+	updatesUsed: number;
+	othersUsed: number;
 	broken: string[];
 };
 
@@ -39,6 +44,9 @@ const points: Record<string, Point> = { p1: [0, 0] };
 const maxKeys = 2;
 const maxLogins = 2;
 const maxPoints = 4;
+const maxUpdates = 2;
+const maxOthers = 1;
+const feature1 = { ref: { id: 1, city: 'A' as const, public: true }, properties: { name: 'p1' } };
 
 export const init: World = {
 	app: { kind: '未ログイン', error: null },
@@ -48,6 +56,9 @@ export const init: World = {
 	doubtful: [],
 	keysUsed: 0,
 	loginsUsed: 0,
+	row: { version: 0, applied: [] },
+	updatesUsed: 0,
+	othersUsed: 0,
 	broken: []
 };
 
@@ -73,15 +84,24 @@ function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {
 		sent[f.draft.key] = content(f.draft);
 	}
 	const stored = server.stored ?? w.stored;
+	const row = server.row ?? w.row;
 	const before = session(w.app)?.screen;
 	const after = session(state);
-	if (
-		before &&
-		saving(before) &&
-		after?.screen.kind === '閲覧' &&
-		after.tiles > session(w.app)!.tiles
-	)
+	const refreshed = after !== null && after.tiles > (session(w.app)?.tiles ?? Infinity);
+	if (before && saving(before) && after?.screen.kind === '閲覧' && refreshed)
 		if (stored[before.draft.key] !== content(before.draft)) broken.add('成功の表示');
+	if (before?.kind === '更新結果不明')
+		for (const f of effects)
+			if (
+				f.type === '更新する' &&
+				(f.key !== before.key || JSON.stringify(f.edit) !== JSON.stringify(before.edit))
+			)
+				broken.add('P12');
+	if (before?.kind === '更新中') {
+		const applied = row.applied.includes(before.key);
+		if (after?.screen.kind === '競合' && applied) broken.add('競合の表示');
+		if (after?.screen.kind === '閲覧' && refreshed && !applied) broken.add('更新の成功の表示');
+	}
 	return {
 		...w,
 		...server,
@@ -93,9 +113,17 @@ function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {
 	};
 }
 
-function sampleOps(w: World): [string, Op][] {
+function sampleOps(w: World, env: Environment): [string, Op][] {
+	const ops = allOps(w);
+	const editing = ['編集を始める', '名前を変える', '編集を保存', '読み直す'];
+	return ops.filter(([, op]) =>
+		env.scope === '作成' ? !editing.includes(op.type) : op.type !== '描画開始'
+	);
+}
+
+function allOps(w: World): [string, Op][] {
 	const v = session(w.app)?.screen;
-	const full = v !== undefined && v.kind !== '閲覧' && v.draft.points.length >= maxPoints;
+	const full = v !== undefined && 'draft' in v && v.draft.points.length >= maxPoints;
 	return [
 		...(w.loginsUsed < maxLogins
 			? Object.keys(users).map((email): [string, Op] => [
@@ -108,7 +136,7 @@ function sampleOps(w: World): [string, Op][] {
 			? []
 			: Object.entries(points).flatMap(([name, at]): [string, Op][] => [
 					[`地図の${name}をクリック`, { type: '地図をクリック', at, feature: null }],
-					[`${name}の地物をクリック`, { type: '地図をクリック', at, feature: { name } }]
+					[`${name}の地物をクリック`, { type: '地図をクリック', at, feature: feature1 }]
 				])),
 		['ポップアップを閉じる', { type: 'ポップアップを閉じる' }],
 		...(w.keysUsed < maxKeys
@@ -124,11 +152,46 @@ function sampleOps(w: World): [string, Op][] {
 		['公開にする', { type: '公開を選ぶ', public: true }],
 		['確定', { type: '確定' }],
 		['取消', { type: '取消' }],
-		['再送', { type: '再送' }]
+		['再送', { type: '再送' }],
+		['編集を始める', { type: '編集を始める' }],
+		['名前を変える', { type: '名前を変える', name: 'n1' }],
+		...(w.updatesUsed < maxUpdates
+			? [
+					[
+						`編集を保存(u${w.updatesUsed + 1})`,
+						{ type: '編集を保存', key: `u${w.updatesUsed + 1}` }
+					] as [string, Op]
+				]
+			: []),
+		['読み直す', { type: '読み直す' }]
 	];
 }
 
-function deliveries(f: Effect, w: World): [string, Reply, Partial<World>][] {
+/** サーバーの更新(`saveFeature`)。キーを記録する(P12)。`idempotent` を外すと、キーを見ない素朴な更新になる。 */
+function updateOutcomes(
+	w: World,
+	edit: { version: number },
+	key: string,
+	idempotent: boolean
+): [string, Reply, Partial<World>][] {
+	const failures: [string, Reply, Partial<World>][] = [
+		[`${key}をサーバーが拒否する`, { type: '保存失敗' }, {}],
+		[`${key}の要求がサーバーに届かない`, { type: '保存結果不明' }, {}],
+		[`${key}の要求の本人がセッションと違う`, { type: '本人が変わった' }, {}]
+	];
+	if (idempotent && w.row.applied.includes(key))
+		return [[`${key}はもう効いている(成功が届く)`, { type: '保存成功' }, {}], ...failures];
+	if (edit.version !== w.row.version)
+		return [[`${key}は版が古く、競合が届く`, { type: '競合した' }, {}], ...failures];
+	const row = { version: w.row.version + 1, applied: [...w.row.applied, key] };
+	return [
+		[`${key}が効き、成功が届く`, { type: '保存成功' }, { row }],
+		[`${key}が効いたが、応答が届かない`, { type: '保存結果不明' }, { row }],
+		...failures
+	];
+}
+
+function deliveries(f: Effect, w: World, env: Environment): [string, Reply, Partial<World>][] {
 	switch (f.type) {
 		case 'ログインする':
 			return [
@@ -160,18 +223,42 @@ function deliveries(f: Effect, w: World): [string, Reply, Partial<World>][] {
 				[`${key}の要求の本人がセッションと違う`, { type: '本人が変わった' }, {}]
 			];
 		}
+		case '読み込む':
+			return [
+				[
+					`地物を読み込めた(版${w.row.version})`,
+					{
+						type: '読み込めた',
+						edit: { ref: feature1.ref, version: w.row.version, name: '元の名前', note: '' }
+					},
+					{}
+				],
+				['地物を読み込めない', { type: '読み込めない' }, {}],
+				['読み込みの本人がセッションと違う', { type: '本人が変わった' }, {}]
+			];
+		case '更新する':
+			return updateOutcomes(w, f.edit, f.key, env.idempotentUpdates);
 	}
 }
+
+/**
+ * 検査の範囲とサーバーの性質。作成(描画と保存)と編集は独立した流れなので、別々に全探索する
+ * (1つの世界に入れると、サーバーの状態が掛け算で増えて、メモリに収まらない)。
+ * 既定のサーバーは実装のとおり(更新はキーで冪等)。
+ */
+export type Environment = { scope: '作成' | '編集'; idempotentUpdates: boolean };
+export const creating: Environment = { scope: '作成', idempotentUpdates: true };
+export const editing: Environment = { scope: '編集', idempotentUpdates: true };
 
 // 利用者は、画面に差し出された操作だけを行う(画面はそれ以外の操作を送れない)。
 // 環境は、飛んでいる副作用のどれかに、ありうる応答のどれかを返す。受け取れない応答は「応答を捨てた」として記録する。
 // 地図ライブラリからの知らせ(タイルの本人違い)は、いつでも届く。
 export const stepsWith =
-	(m: Machine) =>
+	(m: Machine, env: Environment = creating) =>
 	(w: World): Step<World>[] => {
 		const out: Step<World>[] = [];
 		const offered = m.offers(w.app);
-		for (const [label, op] of sampleOps(w)) {
+		for (const [label, op] of sampleOps(w, env)) {
 			const step = perform(offered, op);
 			if (!step) continue;
 			out.push([
@@ -179,14 +266,24 @@ export const stepsWith =
 				{
 					...apply(w, step),
 					keysUsed: w.keysUsed + (op.type === '描画開始' ? 1 : 0),
-					loginsUsed: w.loginsUsed + (op.type === 'ログインを押す' ? 1 : 0)
+					loginsUsed: w.loginsUsed + (op.type === 'ログインを押す' ? 1 : 0),
+					updatesUsed: w.updatesUsed + (op.type === '編集を保存' ? 1 : 0)
 				}
 			]);
 		}
 		out.push(['地図の本人が変わった', apply(w, m.notify(w.app, { type: '地図の本人が変わった' }))]);
+		if (env.scope === '編集' && w.othersUsed < maxOthers)
+			out.push([
+				'ほかの人が地物を更新する',
+				{
+					...w,
+					row: { ...w.row, version: w.row.version + 1 },
+					othersUsed: w.othersUsed + 1
+				}
+			]);
 		w.inflight.forEach((f, i) => {
 			const inflight = w.inflight.filter((_, j) => j !== i);
-			for (const [label, reply, server] of deliveries(f, w)) {
+			for (const [label, reply, server] of deliveries(f, w, env)) {
 				const step = m.receive(w.app, reply);
 				out.push([
 					label,
@@ -205,6 +302,7 @@ export const stepsWith =
 	};
 
 export const steps = stepsWith(machine);
+export const editSteps = stepsWith(machine, editing);
 
 // 応答を捨てない: 飛んでいる副作用への応答は、届いた状態で必ず受け取れる
 export const repliesAccepted = (w: World) => !w.broken.includes('応答を捨てた');
@@ -231,10 +329,25 @@ export const honestSuccess = (w: World) => !w.broken.includes('成功の表示')
 // 編集できない人は描けない。市職員は自分の市にしか描けない
 export const drawPermission = (w: World) => {
 	const s = session(w.app);
-	if (!s || s.screen.kind === '閲覧') return true;
+	if (!s || !('draft' in s.screen)) return true;
 	if (!s.me.canEdit) return false;
 	return s.me.role === 'admin' || s.screen.draft.city === (s.me.role === 'b-staff' ? 'B' : 'A');
 };
+
+// P12: 結果が分からなくなった更新は、同じキー・同じ中身でしか送り直さない
+export const p12 = (w: World) => !w.broken.includes('P12');
+
+// 応答待ち(保存中・読込中・更新中)なら、その副作用がまだ飛んでいる(届けば応答待ちを抜ける)
+export const busyAwaits = (w: World) => {
+	const v = session(w.app)?.screen;
+	return !v || !busy(v) || w.inflight.some((f) => f.type !== 'ログアウトする');
+};
+
+// 競合の表示が正直: 競合と表示したとき、その更新はサーバーで効いていない(P12)
+export const honestConflict = (w: World) => !w.broken.includes('競合の表示');
+
+// 更新の成功の表示が正直: 成功と表示したとき、その更新はサーバーで効いている
+export const honestUpdate = (w: World) => !w.broken.includes('更新の成功の表示');
 
 export const kindOf = (app: State) => {
 	const s = session(app);

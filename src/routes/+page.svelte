@@ -4,6 +4,7 @@
 	import type {
 		ErrorEvent,
 		ExpressionSpecification,
+		MapGeoJSONFeature,
 		MapMouseEvent,
 		StyleSpecification
 	} from 'maplibre-gl';
@@ -23,6 +24,7 @@
 	import ActionButton from '#lib/ui/ActionButton.svelte';
 	import ActionCheckbox from '#lib/ui/ActionCheckbox.svelte';
 	import ActionSelect from '#lib/ui/ActionSelect.svelte';
+	import ActionTextInput from '#lib/ui/ActionTextInput.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -79,7 +81,7 @@
 		app.kind === 'ログイン済み' ? app : app.kind === 'ログアウト中' ? app.from : null
 	);
 	const screen = $derived(session?.screen);
-	const draft = $derived(screen && screen.kind !== '閲覧' ? screen.draft : null);
+	const draft = $derived(screen && 'draft' in screen ? screen.draft : null);
 	const tilesUrl = $derived(
 		`${page.url.origin}/tiles/{z}/{x}/{y}?v=${session?.tiles ?? 0}&as=${encodeURIComponent(session?.me.id ?? '')}`
 	);
@@ -111,12 +113,17 @@
 			machine.notify({ type: '地図の本人が変わった' });
 	}
 
+	/** タイルから届いた地物を、状態機械が使う形(id・市・公開)にする。形が違えば、地物がないことにする。 */
+	function featureOf(hit: MapGeoJSONFeature | undefined) {
+		const p = hit?.properties;
+		if (typeof hit?.id !== 'number' || (p?.city !== 'A' && p?.city !== 'B')) return null;
+		if (typeof p.public !== 'boolean') return null;
+		return { ref: { id: hit.id, city: p.city as City, public: p.public }, properties: p };
+	}
+
 	function onMapClick(e: MapMouseEvent) {
 		const [hit] = e.target.queryRenderedFeatures(e.point, { layers: clickable });
-		actions.地図をクリック?.({
-			at: [e.lngLat.lng, e.lngLat.lat],
-			feature: hit?.properties ?? null
-		});
+		actions.地図をクリック?.({ at: [e.lngLat.lng, e.lngLat.lat], feature: featureOf(hit) });
 	}
 </script>
 
@@ -195,6 +202,12 @@
 						<dd>{String(value)}</dd>
 					{/each}
 				</dl>
+				<ActionButton
+					class="mt-2 w-full rounded border px-2 py-0.5 text-xs"
+					action={actions.編集を始める}
+				>
+					編集を始める
+				</ActionButton>
 			</Popup>
 		{/if}
 	</MapLibre>
@@ -260,6 +273,59 @@
 			{#if session.screen.notice === '保存失敗'}
 				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
 			{/if}
+		{:else if session.screen.kind === '編集中'}
+			{@const e = session.screen.edit}
+			<p>地物 {e.ref.id} を編集(版 {e.version})</p>
+			<ActionTextInput action={actions.名前を変える} payload={(name) => ({ name })} value={e.name}>
+				名前
+			</ActionTextInput>
+			<ActionTextInput action={actions.備考を変える} payload={(note) => ({ note })} value={e.note}>
+				備考
+			</ActionTextInput>
+			<div class="flex gap-2">
+				<ActionButton
+					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+					action={actions.編集を保存}
+					payload={() => ({ key: crypto.randomUUID() })}
+				>
+					保存する
+				</ActionButton>
+				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>やめる</ActionButton>
+			</div>
+			{#if session.screen.notice === '更新失敗'}
+				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
+			{/if}
+		{:else if session.screen.kind === '更新結果不明'}
+			<p class="text-red-600">
+				保存されたか分かりません(応答が届きませんでした)。再送しても、二重に効くことはありません。
+			</p>
+			<div class="flex gap-2">
+				<ActionButton
+					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+					action={actions.再送}
+				>
+					再送する
+				</ActionButton>
+				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>やめる</ActionButton>
+			</div>
+			{#if session.screen.notice === '再送失敗'}
+				<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
+			{/if}
+		{:else if session.screen.kind === '競合'}
+			{@const e = session.screen.edit}
+			<p class="text-red-600">
+				ほかの人が先に保存していました。上書きはしません。読み直してから、編集し直してください。
+			</p>
+			<p class="text-gray-600">あなたの編集: 名前「{e.name}」・備考「{e.note}」</p>
+			<div class="flex gap-2">
+				<ActionButton
+					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+					action={actions.読み直す}
+				>
+					読み直す
+				</ActionButton>
+				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>やめる</ActionButton>
+			</div>
 		{:else if session.screen.kind === '結果不明'}
 			<p class="text-red-600">
 				保存されたか分かりません(応答が届きませんでした)。再送しても地物が二重にできることはありません。

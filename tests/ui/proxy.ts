@@ -7,7 +7,9 @@ export const faults = [
 	'保存したがゲートウェイが504を返す',
 	'サーバーに届かない(503)',
 	'拒否する(409)',
-	'応答が来ない'
+	'応答が来ない',
+	'ほかの人の更新が割り込む',
+	'読み込みが遅れる'
 ] as const;
 export type Fault = (typeof faults)[number];
 
@@ -20,13 +22,17 @@ const schedule: [number, Fault][] = [
 	[10, '応答が来ない']
 ];
 
-const pick = (): Fault => {
-	let r = Math.random() * schedule.reduce((sum, [w]) => sum + w, 0);
-	for (const [w, fault] of schedule) if ((r -= w) < 0) return fault;
-	return schedule[0][1];
+// 更新(PUT)には、ほかの人の更新が先に割り込む障害も起こす(1つのブラウザの探索では競合が起きないため)
+const updateSchedule: [number, Fault][] = [...schedule, [20, 'ほかの人の更新が割り込む']];
+
+const pick = (from: [number, Fault][]): Fault => {
+	let r = Math.random() * from.reduce((sum, [w]) => sum + w, 0);
+	for (const [w, fault] of from) if ((r -= w) < 0) return fault;
+	return from[0][1];
 };
 
-export function startProxy(port: number, upstream: URL) {
+/** `interfere` は、ほかの人の更新を1つ効かせる(版を上げ、そのキーも記録する)。 */
+export function startProxy(port: number, upstream: URL, interfere: (id: number) => Promise<void>) {
 	const counts = new Map<Fault, number>(faults.map((f) => [f, 0]));
 	const log: { at: number; fault: Fault; key: string; reused: boolean }[] = [];
 	const served = new WeakSet<object>();
@@ -59,11 +65,18 @@ export function startProxy(port: number, upstream: URL) {
 		const reused = served.has(req.socket);
 		served.add(req.socket);
 		const path = new URL(req.url ?? '/', 'http://proxy').pathname;
-		if (req.method !== 'POST' || path !== '/api/features') return forward(req, res);
+		const one = /^\/api\/features\/(\d+)$/.exec(path);
+		if (req.method === 'GET' && one && Math.random() < 0.5) {
+			counts.set('読み込みが遅れる', (counts.get('読み込みが遅れる') ?? 0) + 1);
+			return void setTimeout(() => forward(req, res), 500 + Math.random() * 1500);
+		}
+		const creating = req.method === 'POST' && path === '/api/features';
+		const updating = req.method === 'PUT' && one !== null;
+		if (!creating && !updating) return forward(req, res);
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(chunk);
 		const body = Buffer.concat(chunks);
-		const fault = pick();
+		const fault = pick(updating ? updateSchedule : schedule);
 		counts.set(fault, (counts.get(fault) ?? 0) + 1);
 		log.push({ at: Date.now(), fault, key: String(JSON.parse(String(body)).key), reused });
 		switch (fault) {
@@ -100,6 +113,11 @@ export function startProxy(port: number, upstream: URL) {
 					.end('{"ok":false,"reason":"conflict"}');
 			case '応答が来ない':
 				return void setTimeout(() => res.socket?.destroy(), 30_000).unref();
+			case 'ほかの人の更新が割り込む':
+				await interfere(Number(one?.[1]));
+				return forward(req, res, undefined, body);
+			case '読み込みが遅れる':
+				return forward(req, res, undefined, body);
 		}
 	});
 

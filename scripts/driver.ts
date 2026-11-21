@@ -30,6 +30,13 @@ export function pixelOf(at: [number, number]) {
 	return { x: x - cx + viewport.width / 2, y: y - cy + viewport.height / 2 };
 }
 
+/** パネルや拡大縮小のボタンに隠れない、地図の上にある点の地物 */
+const onScreen = (f: (typeof seedFeatures)[number]) => {
+	if (f.geometry.type !== 'Point') return false;
+	const { x, y } = pixelOf(f.geometry.coordinates as [number, number]);
+	return x > panelRight && x < viewport.width - 80 && y > 120 && y < 760;
+};
+
 const visibleTo = (role: Role) => (f: (typeof seedFeatures)[number]) =>
 	role === 'admin' ||
 	(role === 'viewer' ? f.public : f.city === { 'a-staff': 'A', 'b-staff': 'B' }[role]);
@@ -79,20 +86,32 @@ export const driver = (page: Page) => {
 			return (await app.draftKey()) ?? '';
 		},
 
+		/** ボタンを押し、それで飛んだ地物の書き込み(作成は POST、更新は PUT)の応答の状態コードを返す。 */
 		async save(button = '確定して保存') {
 			const response = page.waitForResponse(
-				(r) => new URL(r.url()).pathname === '/api/features' && r.request().method() === 'POST'
+				(r) =>
+					new URL(r.url()).pathname.startsWith('/api/features') &&
+					['POST', 'PUT'].includes(r.request().method())
 			);
 			await app.press(button);
 			return (await response).status();
 		},
 
+		fill: (label: string, value: string) => page.getByLabel(label).fill(value),
+
 		async openPopup(role: Role) {
-			const target = seedFeatures
-				.filter((f) => f.geometry.type === 'Point' && visibleTo(role)(f))
-				.map((f) => pixelOf(f.geometry.coordinates as [number, number]))
-				.find(({ x, y }) => x > panelRight && x < viewport.width - 80 && y > 120 && y < 760);
+			const target = seedFeatures.find(
+				(f) => f.geometry.type === 'Point' && visibleTo(role)(f) && onScreen(f)
+			);
 			if (!target) throw new Error(`${role} に見える点の地物が画面の中にない`);
+			await app.openFeature(target.id);
+		},
+
+		/** シードの点の地物をクリックして、ポップアップを開く。 */
+		async openFeature(id: number) {
+			const f = seedFeatures.find((f) => f.id === id && f.geometry.type === 'Point');
+			if (!f || !onScreen(f)) throw new Error(`地物 ${id} は画面の中の点ではない`);
+			const target = pixelOf(f.geometry.coordinates as [number, number]);
 			const popup = page.locator('.maplibregl-popup');
 			for (let i = 0; i < 10 && !(await popup.count()); i++) {
 				await page.mouse.click(target.x, target.y);
@@ -112,7 +131,7 @@ export const driver = (page: Page) => {
 			return res.status();
 		},
 
-		hold: (path: string) => hold(page, path),
+		hold: (path: string | RegExp, method = 'POST') => hold(page, path, method),
 
 		async settle() {
 			await page.waitForLoadState('networkidle').catch(() => {});
@@ -122,12 +141,14 @@ export const driver = (page: Page) => {
 	return app;
 };
 
-async function hold(page: Page, path: string) {
-	const pattern = (url: URL) => url.pathname === path;
+/** そのパス(文字列ならちょうど、正規表現なら一致)とメソッドの要求を、release するまで止める。 */
+async function hold(page: Page, path: string | RegExp, method: string) {
+	const pattern = (url: URL) =>
+		typeof path === 'string' ? url.pathname === path : path.test(url.pathname);
 	let arrived: (route: Route) => void = () => {};
 	const arrival = new Promise<Route>((r) => (arrived = r));
 	await page.route(pattern, (route) =>
-		route.request().method() === 'POST' ? arrived(route) : route.continue()
+		route.request().method() === method ? arrived(route) : route.continue()
 	);
 	return {
 		async release(status?: number) {

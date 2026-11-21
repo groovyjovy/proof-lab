@@ -18,7 +18,18 @@ const me: fc.Arbitrary<Me> = fc.record({
 	canEdit: fc.boolean()
 });
 const at = fc.tuple(fc.integer({ min: -180, max: 180 }), fc.integer({ min: -90, max: 90 }));
-const feature = fc.constantFrom(null, { name: 'A市の地物01' }, { city: 'B', version: 2 });
+const ref = fc.record({
+	id: fc.constantFrom(1, 2),
+	city: fc.constantFrom<'A' | 'B'>('A', 'B'),
+	public: fc.boolean()
+});
+const feature = fc.option(ref.map((ref) => ({ ref, properties: { name: `地物${ref.id}` } })));
+const edit = fc.record({
+	ref,
+	version: fc.nat(3),
+	name: fc.constantFrom('元の名前', 'n1'),
+	note: fc.constantFrom('', '備考')
+});
 const key = fc.constantFrom('k1', 'k2');
 
 const op: fc.Arbitrary<Op> = fc.oneof(
@@ -36,9 +47,17 @@ const op: fc.Arbitrary<Op> = fc.oneof(
 			{ type: 'ログアウトを押す' },
 			{ type: 'ポップアップを閉じる' },
 			{ type: '市を選ぶ', city: 'B' },
-			{ type: '公開を選ぶ', public: true }
+			{ type: '公開を選ぶ', public: true },
+			{ type: '編集を始める' },
+			{ type: '名前を変える', name: 'n1' },
+			{ type: '備考を変える', note: '備考' },
+			{ type: '読み直す' }
 		),
 		weight: 4
+	},
+	{
+		arbitrary: fc.constantFrom('u1', 'u2').map((key): Op => ({ type: '編集を保存', key })),
+		weight: 1
 	},
 	{ arbitrary: fc.constantFrom<Op>({ type: 'ログインを押す', email: 'a@example.com' }), weight: 1 }
 );
@@ -51,9 +70,23 @@ const reply: fc.Arbitrary<Reply> = fc.oneof(
 		{ type: '保存成功' },
 		{ type: '保存失敗' },
 		{ type: '保存結果不明' },
-		{ type: '本人が変わった' }
-	)
+		{ type: '本人が変わった' },
+		{ type: '読み込めない' },
+		{ type: '競合した' }
+	),
+	edit.map((edit): Reply => ({ type: '読み込めた', edit }))
 );
+const editAndSave = fc
+	.tuple(ref, edit, fc.constantFrom<Reply['type']>('保存結果不明', '競合した', '保存失敗'))
+	.map(([ref, loaded, outcome]): Event[] => [
+		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: {} } } },
+		{ op: { type: '編集を始める' } },
+		{ reply: { type: '読み込めた', edit: { ...loaded, ref } } },
+		{ op: { type: '名前を変える', name: 'n1' } },
+		{ op: { type: '編集を保存', key: 'u1' } },
+		{ reply: { type: outcome } as Reply },
+		{ op: { type: 'ログアウトを押す' } }
+	]);
 const drawAndCommit = fc
 	.tuple(key, fc.array(at, { minLength: 3, maxLength: 4 }))
 	.map(([key, points]): Event[] => [
@@ -73,6 +106,15 @@ const events = fc
 			{ arbitrary: drawAndCommit, weight: 1 },
 			{
 				arbitrary: drawAndCommit.map((es): Event[] => [...es, { reply: { type: '保存結果不明' } }]),
+				weight: 1
+			},
+			{ arbitrary: editAndSave, weight: 2 },
+			{
+				arbitrary: drawAndCommit.map((es): Event[] => [
+					...es,
+					{ reply: { type: '保存結果不明' } },
+					{ op: { type: '再送' } }
+				]),
 				weight: 1
 			},
 			{
@@ -127,14 +169,15 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 		}),
 		{ numRuns: 2000 }
 	);
+	const loggedIn = ['閲覧', '描画中', '保存中', '再送中', '結果不明'];
+	const editing = ['読込中', '編集中', '更新中', '更新結果不明', '競合'];
+	const loggingOut = ['閲覧', '描画中', '結果不明', '編集中', '更新結果不明', '競合'];
 	expect([...visited].sort()).toEqual(
 		[
 			'未ログイン',
 			'ログイン中',
-			...['閲覧', '描画中', '保存中', '再送中', '結果不明'].map((v) => `ログイン済み/${v}`),
-			...['閲覧', '描画中', '保存中', '再送中', '結果不明'].map((v) => `ログアウト中/${v}`)
-		]
-			.filter((k) => !['ログアウト中/保存中', 'ログアウト中/再送中'].includes(k))
-			.sort()
+			...[...loggedIn, ...editing].map((v) => `ログイン済み/${v}`),
+			...loggingOut.map((v) => `ログアウト中/${v}`)
+		].sort()
 	);
 });

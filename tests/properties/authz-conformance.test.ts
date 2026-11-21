@@ -3,6 +3,7 @@ import { afterAll, expect, test } from 'vitest';
 import { seedUsers } from '../../db/seed.ts';
 import {
 	exits,
+	getOne,
 	insertFeature,
 	roles,
 	setCanEdit,
@@ -39,8 +40,11 @@ test.each(cases)(
 		const spec = decision(role, city, isPublic, canEdit);
 
 		const received = (await list.fetch(role, [0, 0, 0, 0])).find((f) => f.id === id);
-		expect(received !== undefined, '読めるか').toBe(spec.canRead);
+		expect(received !== undefined, '一覧で読めるか').toBe(spec.canRead);
 		if (received) expect('owner_name' in received.properties, '所有者名').toBe(spec.seesOwner);
+		const one = await getOne(role, id);
+		expect(one !== undefined, '1件で読めるか').toBe(spec.canRead);
+		if (one) expect('owner_name' in one.properties, '1件の所有者名').toBe(spec.seesOwner);
 
 		const created = await statusAs(role, '/api/features', as, {
 			key: randomUUID(),
@@ -55,7 +59,7 @@ test.each(cases)(
 			role,
 			`/api/features/${id}`,
 			as,
-			{ version: 0, city: moveTo, name: '突き合わせ', note: '' },
+			{ key: randomUUID(), version: 0, city: moveTo, name: '突き合わせ', note: '' },
 			'PUT'
 		);
 		expect(moved === 200, '移して編集できるか').toBe(

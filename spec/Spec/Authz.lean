@@ -124,15 +124,27 @@ Cookie は同じブラウザのすべての画面で共有され、ほかの画�
 
 def served (requested session : String) : Bool := requested == session
 
-/-! ## 同時編集(P4)と作成の冪等性(P10) -/
+/-! ## 同時編集(P4)、更新の冪等性(P12)、作成の冪等性(P10) -/
 
+/-- 地物の行。版と、これまでの編集と、効かせた更新のキー(`feature_update` 表)。 -/
 structure Row where
   version : Nat
   edits : List String
+  applied : List String
 
-/-- 保存は、読み込んだ版が今の版と同じときだけ通り、版を1つ上げる(`where version = $2`)。 -/
-def Row.save (r : Row) (readVersion : Nat) (edit : String) : Option Row :=
-  if readVersion = r.version then some ⟨r.version + 1, r.edits ++ [edit]⟩ else none
+inductive UpdateResult where
+  | applied (r : Row)
+  /-- このキーの更新はもう効いている。何もせず、成功を返す -/
+  | replayed
+  /-- 読み込んだ版が古い。ほかの人が先に保存した -/
+  | conflict
+
+/-- 更新(`saveFeature`)。キーがもう効いていれば成功を返すだけ(P12)。そうでなければ、読み込んだ版が
+    今の版と同じときだけ効かせ、版を1つ上げてキーを記録する(P4)。 -/
+def Row.update (r : Row) (key : String) (readVersion : Nat) (edit : String) : UpdateResult :=
+  if key ∈ r.applied then .replayed
+  else if readVersion = r.version then .applied ⟨r.version + 1, r.edits ++ [edit], r.applied ++ [key]⟩
+  else .conflict
 
 /-- 作成は、同じキーがもうあれば何もしない(`on conflict (request_key) do nothing`)。 -/
 def create (store : List (String × α)) (key : String) (v : α) : List (String × α) :=

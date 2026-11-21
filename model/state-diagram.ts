@@ -29,7 +29,8 @@ export function stateDiagram() {
 		},
 		notify: (s, n) => record(m3.kindOf(s), n.type, notify(s, n))
 	};
-	check(m3.init, m3.stepsWith(recording), () => true);
+	check(m3.init, m3.stepsWith(recording, m3.creating), () => true);
+	check(m3.init, m3.stepsWith(recording, m3.editing), () => true);
 
 	const mermaid = [
 		'stateDiagram-v2',

@@ -69,20 +69,37 @@ theorem p3_cache_counterexample :
     (World.start.run [.revoke]).revoked = true ∧ allows .cache (World.start.run [.revoke]) = true := by
   decide
 
-/-- P4 ロストアップデートなし(1): 同じ版を読んだ二人のうち、先に保存した人の保存が通ったら、
-    後の人の保存は通らない(読み直してから保存し直す)。 -/
-theorem p4_second_rejected (r r₁ : Row) (e₁ e₂ : String) (h : r.save r.version e₁ = some r₁) :
-    r₁.save r.version e₂ = none := by
-  simp [Row.save] at h
-  subst h
-  simp [Row.save]
+/-- 更新が効いたなら、キーはまだ効いておらず、版は読み込んだ版で、行はこう変わる。 -/
+theorem update_applied {r r' : Row} {k : String} {v : Nat} {e : String}
+    (h : r.update k v e = .applied r') :
+    k ∉ r.applied ∧ v = r.version ∧ r' = ⟨r.version + 1, r.edits ++ [e], r.applied ++ [k]⟩ := by
+  unfold Row.update at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+      exact ⟨by assumption, by assumption, rfl⟩
+    · cases h
 
-/-- P4 ロストアップデートなし(2): 保存が通っても、それまでの編集は消えない。 -/
-theorem p4_kept (r r' : Row) (v : Nat) (e : String) (h : r.save v e = some r') :
+/-- P4 ロストアップデートなし(1): 同じ版を読んだ二人のうち、先の人の更新が効いたら、別のキーで送った
+    後の人の更新は競合になる(読み直してから保存し直す)。 -/
+theorem p4_second_rejected (r r₁ : Row) (k₁ k₂ e₁ e₂ : String) (hk : k₂ ≠ k₁) (hnew : k₂ ∉ r.applied)
+    (h : r.update k₁ r.version e₁ = .applied r₁) : r₁.update k₂ r.version e₂ = .conflict := by
+  obtain ⟨_, _, rfl⟩ := update_applied h
+  simp [Row.update, hk, hnew]
+
+/-- P4 ロストアップデートなし(2): 更新が効いても、それまでの編集は消えない。 -/
+theorem p4_kept (r r' : Row) (k : String) (v : Nat) (e : String) (h : r.update k v e = .applied r') :
     r'.edits = r.edits ++ [e] := by
-  simp [Row.save] at h
-  obtain ⟨_, rfl⟩ := h
+  obtain ⟨_, _, rfl⟩ := update_applied h
   rfl
+
+/-- P12 更新の冪等性: 一度効いたキーの更新は、版や中身が何であっても、もう効かない(成功だけを返す)。
+    結果が分からない更新を送り直しても、自分の更新と競合しない。 -/
+theorem p12_replay (r r' : Row) (k : String) (v v' : Nat) (e e' : String)
+    (h : r.update k v e = .applied r') : r'.update k v' e' = .replayed := by
+  obtain ⟨_, _, rfl⟩ := update_applied h
+  simp [Row.update]
 
 /-- P10 作成の冪等性: 同じキーで何度作成しても、キーごとに行は1つ。 -/
 theorem p10_server {α : Type} (store : List (String × α)) (key : String) (v : α)

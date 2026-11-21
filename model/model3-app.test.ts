@@ -18,6 +18,72 @@ for (const [name, property] of Object.entries(properties))
 		expect(check(m3.init, m3.steps, property)).toMatchObject({ ok: true });
 	});
 
+const editProperties = {
+	'応答を捨てない: 飛んでいる副作用への応答は、届いた状態で必ず受け取れる': m3.repliesAccepted,
+	'L1 応答待ち(読込中・更新中)なら、その副作用がまだ飛んでいる': m3.busyAwaits,
+	'P12 結果が分からなくなった更新は、同じキー・同じ中身でしか送り直さない': m3.p12,
+	'競合の表示が正直: 競合と表示したとき、その更新はサーバーで効いていない': m3.honestConflict,
+	'更新の成功の表示が正直: 成功と表示したとき、その更新はサーバーで効いている': m3.honestUpdate
+};
+
+for (const [name, property] of Object.entries(editProperties))
+	test(`モデル3(編集) 実装の offers・receive: ${name}`, () => {
+		expect(check(m3.init, m3.editSteps, property)).toMatchObject({ ok: true });
+	});
+
+test('モデル3(編集) 対照: 探索が編集の画面に全部届いている', () => {
+	const kinds = new Set<string>();
+	check(m3.init, m3.editSteps, (w) => kinds.add(m3.kindOf(w.app)) && true);
+	for (const kind of ['読込中', '編集中', '更新中', '更新結果不明', '競合'])
+		expect(kinds.has(`ログイン済み/${kind}`), kind).toBe(true);
+});
+
+test('モデル3(編集) 対照: サーバーが更新のキーを見ないと、効いた更新を送り直したときに自分の更新と競合する(競合の表示 が破れる)', () => {
+	expect(
+		check(
+			m3.init,
+			m3.stepsWith(m3.machine, { ...m3.editing, idempotentUpdates: false }),
+			m3.honestConflict
+		)
+	).toMatchObject({
+		ok: false,
+		trace: [
+			'初期状態',
+			'管理者でログインを押す',
+			'管理者のログインが通る',
+			'p1の地物をクリック',
+			'編集を始める',
+			'地物を読み込めた(版0)',
+			'編集を保存(u1)',
+			'u1が効いたが、応答が届かない',
+			'再送',
+			'u1は版が古く、競合が届く'
+		]
+	});
+});
+
+const resendWithNewKey: m3.Machine = {
+	receive,
+	notify,
+	offers: (s) => {
+		if (s.kind !== 'ログイン済み' || s.screen.kind !== '更新結果不明') return offers(s);
+		const v = s.screen;
+		return {
+			...offers(s),
+			再送: () => ({
+				state: { ...s, screen: { kind: '更新中', edit: v.edit, key: 'u-new' } },
+				effects: [{ type: '更新する', edit: v.edit, key: 'u-new', as: s.me.id }]
+			})
+		};
+	}
+};
+
+test('モデル3(編集) 対照: 再送で新しいキーを作ると、P12 が破れる', () => {
+	expect(check(m3.init, m3.stepsWith(resendWithNewKey, m3.editing), m3.p12)).toMatchObject({
+		ok: false
+	});
+});
+
 test('モデル3 対照: 探索が全部の画面に届いている(性質が空振りしていないことの確認)', () => {
 	const kinds = new Set<string>();
 	check(m3.init, m3.steps, (w) => kinds.add(m3.kindOf(w.app)) && true);

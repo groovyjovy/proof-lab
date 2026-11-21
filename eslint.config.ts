@@ -131,7 +131,7 @@ export default defineConfig(
 				{
 					elements: ['button', 'input', 'select', 'textarea'],
 					message:
-						'#lib/ui の ActionButton・ActionCheckbox・ActionSelect を使い、action に actions のどれかを渡す。押せるかどうかは、状態機械がその操作を差し出しているかで決まる(差し出していなければ押せなくなる)'
+						'#lib/ui の ActionButton・ActionCheckbox・ActionSelect・ActionTextInput を使い、action に actions のどれかを渡す。押せるかどうかは、状態機械がその操作を差し出しているかで決まる(差し出していなければ押せなくなる)'
 				}
 			]
 		}

@@ -60,6 +60,9 @@ const map = extract((s) => {
 });
 
 const saving = () => panel.current?.screen === '保存中' || panel.current?.screen === '再送中';
+const busy = () =>
+	['保存中', '再送中', '読込中', '更新中'].includes(panel.current?.screen ?? '') &&
+	panel.current?.app === 'ログイン済み';
 const role = () => panel.current?.role ?? null;
 const enabled = (text: string) =>
 	panel.current?.buttons.some((b) => b.text.startsWith(text) && !b.disabled) ?? false;
@@ -88,15 +91,18 @@ export const explore = weighted([
 	[6, press('確定して保存')],
 	[4, press('ポリゴンを描く')],
 	[3, press('再送する')],
+	[8, press('編集を始める')],
+	[8, press('保存する')],
+	[2, press('読み直す')],
 	[1, press('やめる')],
 	[1, press('取消')],
 	[3, clicks],
-	[1, reload.when(() => !saving())],
+	[1, reload.when(() => !busy())],
 	[1, actions(() => ['Wait' as const])]
 ]);
 
-export const L1_保存中はいつか終わる = always(
-	now(saving).implies(eventually(() => !saving()).within(15, 'seconds'))
+export const L1_応答待ちはいつか終わる = always(
+	now(busy).implies(eventually(() => !busy()).within(15, 'seconds'))
 );
 
 export const P6_保存中は新しい描画が始まらない = always(() => {
@@ -113,10 +119,24 @@ export const P10_結果不明の下書きは同じキー同じ形でしか送ら
 	);
 });
 
-export const 保存中はログアウトできない = always(
+export const 応答待ちではログアウトできない = always(
 	() =>
-		!saving() ||
+		!busy() ||
 		panel.current?.buttons.find((b) => b.text.startsWith('ログアウト'))?.disabled === true
+);
+
+export const 競合では読み直すかやめるしか選べない = always(
+	() =>
+		panel.current?.app !== 'ログイン済み' ||
+		panel.current.screen !== '競合' ||
+		panel.current.buttons.map((b) => b.text).join('/') === 'ログアウト/読み直す/やめる'
+);
+
+export const 更新結果不明では再送するかやめるしか選べない = always(
+	() =>
+		panel.current?.app !== 'ログイン済み' ||
+		panel.current.screen !== '更新結果不明' ||
+		panel.current.buttons.map((b) => b.text).join('/') === 'ログアウト/再送する/やめる'
 );
 
 export const 結果不明では再送するかやめるしか選べない = always(

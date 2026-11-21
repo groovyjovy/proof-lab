@@ -28,7 +28,7 @@ export type Loaded = { version: number; city: City; properties: Record<string, u
 
 export type Session = {
 	load: (featureId: string) => Promise<Loaded>;
-	save: (featureId: string, edited: Loaded) => Promise<{ ok: boolean }>;
+	save: (featureId: string, edited: Loaded, key?: string) => Promise<{ ok: boolean }>;
 	create: (city: City, key?: string) => Promise<{ ok: boolean }>;
 	setRole: (user: User, role: Role) => Promise<{ ok: boolean }>;
 	revokeEditPermission: (user: User) => Promise<{ ok: boolean }>;
@@ -176,10 +176,11 @@ export const login = async (user: User): Promise<Session> => {
 			const { version, city } = found.properties;
 			return { version: Number(version), city: city as City, properties: found.properties };
 		},
-		save: (featureId, edited) =>
+		save: (featureId, edited, key = randomUUID()) =>
 			browser.ok(`/api/features/${featureId}`, {
 				method: 'PUT',
 				body: {
+					key,
 					version: edited.version,
 					city: edited.city,
 					name: edited.properties.name,
@@ -252,3 +253,22 @@ export const insertFeature = async (city: City, isPublic: boolean): Promise<stri
 	);
 
 export { userIdOf };
+
+/** 1件を読む API(画面が編集の前に今の版を読む)。読めなければ undefined。 */
+export const getOne = async (user: User, id: string): Promise<Received | undefined> => {
+	const res = await (await browserOf(user)).request(`/api/features/${id}`);
+	if (res.status === 404) return undefined;
+	if (!res.ok) throw new Error(`/api/features/${id} が ${res.status} を返した`);
+	const f = await res.json();
+	return { id: String(f.id), properties: f.properties };
+};
+
+/** 管理者の接続で、地物の版と、効かせた更新のキーの数を読む。 */
+export const updateRecord = async (id: string) => {
+	const { rows } = await adminQuery(
+		`select f.version, (select count(*)::int from feature_update u where u.feature_id = f.id) as keys
+		 from feature f where f.id = $1`,
+		[id]
+	);
+	return rows[0] as { version: number; keys: number };
+};

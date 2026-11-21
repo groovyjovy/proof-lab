@@ -90,7 +90,7 @@ export const seedUsers = [
 export async function restoreSeed(client: ClientBase) {
 	await client.query('begin');
 	await client.query('delete from "session"');
-	await client.query('truncate feature');
+	await client.query('truncate feature_update, feature');
 	for (const f of seedFeatures)
 		await client.query(
 			`insert into feature (id, city, public, name, owner_name, geom)

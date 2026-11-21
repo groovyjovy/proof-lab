@@ -34,7 +34,7 @@ export type NewFeature = {
 	name: string;
 	geometry: Geometry;
 };
-export type FeatureEdit = { version: number; city: City; name: string; note: string };
+export type FeatureEdit = { key: string; version: number; city: City; name: string; note: string };
 export type WriteResult =
 	| { ok: true; id: number; version: number }
 	| { ok: false; reason: 'forbidden' | 'conflict' | 'not-found' };
@@ -141,14 +141,48 @@ export function scopedDb(actorId: string) {
 				return { ok: true, id: Number(row.id), version: row.version };
 			}).catch(forbiddenOnRls),
 
+		getFeature: (id: number) =>
+			run(async (c) => {
+				const { rows } = await c.query(
+					`select ${visibleFeatureJson} from feature_visible where id = $1`,
+					[id]
+				);
+				return rows[0]?.feature as PublicFeature | undefined;
+			}),
+
 		saveFeature: (id: number, edit: FeatureEdit) =>
 			run(async (c): Promise<WriteResult> => {
+				// キーを取る(P12)。同じキーの要求が同時に来ても、一意制約で1つだけが取れる。
+				// もう一方は、先の要求が終わるまで待ってから、取られていたと分かる。
+				const claimed = await c.query(
+					`insert into feature_update (request_key, feature_id, version) values ($1, $2, -1)
+					 on conflict (request_key) do nothing returning request_key`,
+					[edit.key, id]
+				);
+				if (!claimed.rowCount) {
+					const { rows } = await c.query(
+						`select feature_id, version from feature_update where request_key = $1`,
+						[edit.key]
+					);
+					if (rows[0] && Number(rows[0].feature_id) === id)
+						return { ok: true, id, version: rows[0].version };
+					return { ok: false, reason: 'conflict' };
+				}
 				const updated = await c.query(
 					`update feature set city = $3, name = $4, note = $5, version = version + 1
 					 where id = $1 and version = $2 returning version`,
 					[id, edit.version, edit.city, edit.name, edit.note]
 				);
-				if (updated.rowCount) return { ok: true, id, version: updated.rows[0].version };
+				if (updated.rowCount) {
+					const version = updated.rows[0].version;
+					await c.query(`update feature_update set version = $2 where request_key = $1`, [
+						edit.key,
+						version
+					]);
+					return { ok: true, id, version };
+				}
+				// 効かなかったので、キーを放す(同じキーで送り直せば、もう一度試される)
+				await c.query(`delete from feature_update where request_key = $1`, [edit.key]);
 				const visible = await c.query(`select version from feature_visible where id = $1`, [id]);
 				if (!visible.rowCount) return { ok: false, reason: 'not-found' };
 				if (visible.rows[0].version !== edit.version) return { ok: false, reason: 'conflict' };
@@ -171,6 +205,9 @@ export const whoAmI = (locals: App.Locals) =>
 
 export const featuresResponse = (features: readonly PublicFeature[]) =>
 	json({ type: 'FeatureCollection', features });
+
+export const featureResponse = (feature: PublicFeature | undefined) =>
+	feature ? json(feature) : error(404, '地物がない(または読めない)');
 
 export const tileResponse = (tile: PublicTile) =>
 	new Response(tile, {

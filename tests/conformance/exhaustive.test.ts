@@ -23,7 +23,12 @@ const branches: Event[] = [
 	...users.map((u): Event => ({ op: { type: 'ログインを押す', email: `${u.role}@example.com` } })),
 	{ op: { type: 'ログアウトを押す' } },
 	{ op: { type: '地図をクリック', at: [0, 0], feature: null } },
-	{ op: { type: '地図をクリック', at: [0, 0], feature: { name: 'p1' } } },
+	...[
+		{ id: 1, city: 'A' as const, public: true },
+		{ id: 2, city: 'B' as const, public: false }
+	].map((ref): Event => ({
+		op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: { name: 'p' } } }
+	})),
 	{ op: { type: 'ポップアップを閉じる' } },
 	{ op: { type: '描画開始', key: 'k-new' } },
 	{ op: { type: '市を選ぶ', city: 'A' } },
@@ -33,6 +38,11 @@ const branches: Event[] = [
 	{ op: { type: '確定' } },
 	{ op: { type: '取消' } },
 	{ op: { type: '再送' } },
+	{ op: { type: '編集を始める' } },
+	{ op: { type: '名前を変える', name: 'n2' } },
+	{ op: { type: '備考を変える', note: '備考' } },
+	{ op: { type: '編集を保存', key: 'u-new' } },
+	{ op: { type: '読み直す' } },
 	...users.map((me): Event => ({ reply: { type: 'ログイン成功', me } })),
 	{ reply: { type: 'ログイン失敗', message: '失敗' } },
 	{ reply: { type: 'ログアウト完了' } },
@@ -41,15 +51,24 @@ const branches: Event[] = [
 	{ reply: { type: '保存失敗' } },
 	{ reply: { type: '保存結果不明' } },
 	{ reply: { type: '本人が変わった' } },
+	{
+		reply: {
+			type: '読み込めた',
+			edit: { ref: { id: 1, city: 'A', public: true }, version: 5, name: '読んだ名前', note: '' }
+		}
+	},
+	{ reply: { type: '読み込めない' } },
+	{ reply: { type: '競合した' } },
 	{ notice: { type: '地図の本人が変わった' } }
 ];
 
-test('範囲内の網羅: モデル3がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
+test('範囲内の網羅: モデル3(作成・編集)がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
 	const states = new Map<string, State>();
-	check(m3.init, m3.steps, (w) => {
-		states.set(JSON.stringify(w.app), w.app);
-		return true;
-	});
+	for (const steps of [m3.steps, m3.editSteps])
+		check(m3.init, steps, (w) => {
+			states.set(JSON.stringify(w.app), w.app);
+			return true;
+		});
 	const answers = await Promise.all(
 		[...states.values()].map((state) => oracle.ask({ state, branches }))
 	);
@@ -63,5 +82,5 @@ test('範囲内の網羅: モデル3がたどる画面のすべての状態で�
 		});
 		expect(actual, JSON.stringify(state)).toEqual(normalize(answers[i]));
 	});
-	expect(states.size).toBe(671);
+	expect(states.size).toBe(949);
 });

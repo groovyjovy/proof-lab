@@ -109,9 +109,53 @@ const scenarios: Record<string, { draws: boolean; run: (c: Context) => Promise<v
 			await app.reached('ログイン済み/閲覧');
 			await app.settle();
 			await shot('保存した');
+			await editTour(c);
 		}
 	}
 };
+
+const feature = /^\/api\/features\/\d+$/;
+
+/** 既存の地物の編集で、読込中・更新中・更新結果不明・競合と、そのログアウト中を通る。 */
+async function editTour(c: Context) {
+	const { app, shot } = c;
+	await app.openPopup(c.role);
+	const load = await app.hold(feature, 'GET');
+	await app.press('編集を始める');
+	await app.reached('ログイン済み/読込中');
+	await shot();
+	await load.release();
+	await app.reached('ログイン済み/編集中');
+	await shot();
+	await logoutFailing(c);
+	await app.fill('名前', 'tour で直した名前');
+	const first = await app.hold(feature, 'PUT');
+	await app.press('保存する');
+	await app.reached('ログイン済み/更新中');
+	await shot();
+	await first.release(504);
+	await app.reached('ログイン済み/更新結果不明');
+	await shot();
+	await logoutFailing(c);
+	const resend = await app.hold(feature, 'PUT');
+	await app.press('再送する');
+	await app.reached('ログイン済み/更新中');
+	await resend.release(409);
+	await app.reached('ログイン済み/競合');
+	await shot();
+	await logoutFailing(c);
+	await app.press('読み直す');
+	await app.reached('ログイン済み/編集中');
+	await app.fill('名前', 'tour で直した名前');
+	expect200(await app.save('保存する'));
+	await app.reached('ログイン済み/閲覧');
+	await app.settle();
+	await shot('更新した');
+}
+
+function expect200(status: number) {
+	if (status !== 200) throw new Error(`保存の応答が ${status} だった`);
+}
 
 const { values } = parseArgs({
 	options: {

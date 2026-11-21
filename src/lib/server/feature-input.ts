@@ -67,11 +67,18 @@ export function parseNewFeature(body: unknown): NewFeature {
 export function parseEdit(body: unknown): FeatureEdit {
 	if (
 		!isBody(body) ||
+		!isUuid(body.key) ||
 		!Number.isInteger(body.version) ||
 		!isCity(body.city) ||
 		typeof body.name !== 'string' ||
 		typeof body.note !== 'string'
 	)
-		error(400, '{ version, city, name, note } が必要');
-	return { version: Number(body.version), city: body.city, name: body.name, note: body.note };
+		error(400, '{ key(UUID), version, city, name, note } が必要');
+	return {
+		key: body.key,
+		version: Number(body.version),
+		city: body.city,
+		name: body.name,
+		note: body.note
+	};
 }

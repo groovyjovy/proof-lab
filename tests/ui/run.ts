@@ -16,7 +16,15 @@ const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL }
 await admin.connect();
 await restoreSeed(admin);
 
-const proxy = startProxy(Number(origin.port), upstream);
+const proxy = startProxy(Number(origin.port), upstream, async (id) => {
+	await admin.query(
+		`with u as (update feature set version = version + 1, note = note || '(ほかの人)'
+		            where id = $1 returning id, version)
+		 insert into feature_update (request_key, feature_id, version)
+		 select gen_random_uuid(), id, version from u`,
+		[id]
+	);
+});
 const out = await mkdtemp(join(tmpdir(), 'bombadil-'));
 let stopServer = () => {};
 
@@ -62,13 +70,22 @@ try {
 			(select count(*)::int from (
 				select 1 from feature where request_key is not null
 				group by st_asbinary(geom) having count(*) > 1
-			) d) as duplicated
+			) d) as duplicated,
+			(select count(*)::int from feature_update) as updates,
+			(select count(*)::int from feature f
+			 where f.version <> (select count(*) from feature_update u where u.feature_id = f.id)) as untracked
 		 from feature where request_key is not null`
 	);
 
 	console.log('\n観測した画面(状態の数)', Object.fromEntries(observed));
 	console.log('プロキシが起こした障害(保存の要求の数)', Object.fromEntries(proxy.counts));
 	console.log('保存された地物', rows[0].keyed, '/ 同じ形で二重にできた地物', rows[0].duplicated);
+	console.log(
+		'効いた更新',
+		rows[0].updates,
+		'/ 版とキーの数が合わない地物(更新が二重に効いたか、キーなしで効いた)',
+		rows[0].untracked
+	);
 	console.log('破れた性質', Object.fromEntries(violated));
 	console.log('トレース', out);
 	const retried = proxy.log.filter(
@@ -93,11 +110,17 @@ try {
 		'ログイン済み/保存中',
 		'ログイン済み/再送中',
 		'ログイン済み/結果不明',
+		'ログイン済み/編集中',
+		'ログイン済み/更新中',
+		'ログイン済み/更新結果不明',
+		'ログイン済み/競合',
 		...['admin', 'a-staff', 'b-staff', 'viewer'].map((role) => `ポップアップ/${role}`)
 	].filter((k) => (observed.get(k) ?? 0) < minObserved);
 	if (unobserved.length) console.log(`${minObserved} 回未満しか観測できなかった画面`, unobserved);
 	if (rows[0].duplicated) console.log('P10 が破れた: 同じ形の地物が二重にできた');
-	process.exitCode = exitCode || unobserved.length || rows[0].duplicated ? 1 : 0;
+	if (rows[0].untracked) console.log('P12 が破れた: 版とキーの数が合わない地物がある');
+	process.exitCode =
+		exitCode || unobserved.length || rows[0].duplicated || rows[0].untracked ? 1 : 0;
 } finally {
 	stopServer();
 	proxy.close();

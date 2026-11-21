@@ -57,6 +57,24 @@ def draftOf? (j : Json) : Except String (Draft Json) := do
            points := (← (← j.getObjVal? "points").getArr?).toList }
 
 /-- 結果の知らせ(`notice`)は、決まった文字列か `null`。 -/
+def refToJson (r : Ref) : Json :=
+  Json.mkObj [("id", toJson r.id), ("city", toJson (cityName r.city)), ("public", toJson r.isPublic)]
+
+def refOf? (j : Json) : Except String Ref := do
+  return { id := ← j.getObjValAs? Nat "id"
+           city := ← cityOf? (← j.getObjValAs? String "city")
+           isPublic := ← j.getObjValAs? Bool "public" }
+
+def editToJson (e : Edit) : Json :=
+  Json.mkObj [("ref", refToJson e.ref), ("version", toJson e.version), ("name", toJson e.name),
+    ("note", toJson e.note)]
+
+def editOf? (j : Json) : Except String Edit := do
+  return { ref := ← refOf? (← j.getObjVal? "ref")
+           version := ← j.getObjValAs? Nat "version"
+           name := ← j.getObjValAs? String "name"
+           note := ← j.getObjValAs? String "note" }
+
 def noticeFlag? (j : Json) (expected : String) : Except String Bool := do
   let n ← j.getObjVal? "notice"
   if n == .null then return false
@@ -68,11 +86,19 @@ def screenOf? (j : Json) : Except String (Screen Json Json) := do
   | "閲覧" =>
     let sel ← j.getObjVal? "selected"
     if sel == .null then return .view none
-    return .view (some ⟨← sel.getObjVal? "at", ← sel.getObjVal? "properties"⟩)
+    return .view (some ⟨← sel.getObjVal? "at", ← refOf? (← sel.getObjVal? "ref"),
+      ← sel.getObjVal? "properties"⟩)
   | "描画中" => return .drawing (← draftOf? (← j.getObjVal? "draft")) (← noticeFlag? j "保存失敗")
   | "保存中" => return .saving (← draftOf? (← j.getObjVal? "draft"))
   | "結果不明" => return .unknown (← draftOf? (← j.getObjVal? "draft")) (← noticeFlag? j "再送失敗")
   | "再送中" => return .resaving (← draftOf? (← j.getObjVal? "draft"))
+  | "読込中" => return .loading (← refOf? (← j.getObjVal? "ref"))
+  | "編集中" => return .editing (← editOf? (← j.getObjVal? "edit")) (← noticeFlag? j "更新失敗")
+  | "更新中" => return .updating (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
+  | "更新結果不明" =>
+    return .updateUnknown (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
+      (← noticeFlag? j "再送失敗")
+  | "競合" => return .conflicted (← editOf? (← j.getObjVal? "edit"))
   | k => throw s!"知らない画面: {k}"
 
 def sessionOf? (j : Json) : Except String (Session Json Json) := do
@@ -94,7 +120,8 @@ def stateOf? (j : Json) : Except String S := do
 def screenToJson : Screen Json Json → Json
   | .view sel =>
     Json.mkObj [("kind", "閲覧"),
-      ("selected", nullable (sel.map fun s => Json.mkObj [("at", s.pos), ("properties", s.props)]))]
+      ("selected", nullable (sel.map fun s =>
+        Json.mkObj [("at", s.pos), ("ref", refToJson s.ref), ("properties", s.props)]))]
   | .drawing d failed =>
     Json.mkObj [("kind", "描画中"), ("draft", draftToJson d),
       ("notice", if failed then "保存失敗" else .null)]
@@ -103,6 +130,14 @@ def screenToJson : Screen Json Json → Json
     Json.mkObj [("kind", "結果不明"), ("draft", draftToJson d),
       ("notice", if failed then "再送失敗" else .null)]
   | .resaving d => Json.mkObj [("kind", "再送中"), ("draft", draftToJson d)]
+  | .loading r => Json.mkObj [("kind", "読込中"), ("ref", refToJson r)]
+  | .editing e failed =>
+    Json.mkObj [("kind", "編集中"), ("edit", editToJson e), ("notice", if failed then "更新失敗" else .null)]
+  | .updating e key => Json.mkObj [("kind", "更新中"), ("edit", editToJson e), ("key", toJson key)]
+  | .updateUnknown e key failed =>
+    Json.mkObj [("kind", "更新結果不明"), ("edit", editToJson e), ("key", toJson key),
+      ("notice", if failed then "再送失敗" else .null)]
+  | .conflicted e => Json.mkObj [("kind", "競合"), ("edit", editToJson e)]
 
 def sessionToJson (s : Session Json Json) : Json :=
   Json.mkObj [("kind", "ログイン済み"), ("me", meToJson s.me), ("tiles", toJson s.tiles),
@@ -118,6 +153,9 @@ def effectToJson : Effect Json → Json
   | .login email => Json.mkObj [("type", "ログインする"), ("email", toJson email)]
   | .logout => Json.mkObj [("type", "ログアウトする")]
   | .save d actor => Json.mkObj [("type", "保存する"), ("draft", draftToJson d), ("as", toJson actor)]
+  | .load id actor => Json.mkObj [("type", "読み込む"), ("id", toJson id), ("as", toJson actor)]
+  | .update e key actor =>
+    Json.mkObj [("type", "更新する"), ("edit", editToJson e), ("key", toJson key), ("as", toJson actor)]
 
 def opKindName : OpKind → String
   | .pressLogin => "ログインを押す"
@@ -130,6 +168,11 @@ def opKindName : OpKind → String
   | .commit => "確定"
   | .cancel => "取消"
   | .resend => "再送"
+  | .startEdit => "編集を始める"
+  | .editName => "名前を変える"
+  | .editNote => "備考を変える"
+  | .saveEdit => "編集を保存"
+  | .reload => "読み直す"
 
 def opOf? (j : Json) : Except String (Op Json Json) := do
   match ← j.getObjValAs? String "type" with
@@ -137,7 +180,9 @@ def opOf? (j : Json) : Except String (Op Json Json) := do
   | "ログアウトを押す" => return .pressLogout
   | "地図をクリック" =>
     let feature ← j.getObjVal? "feature"
-    return .clickMap (← j.getObjVal? "at") (if feature == .null then none else some feature)
+    if feature == .null then return .clickMap (← j.getObjVal? "at") none
+    return .clickMap (← j.getObjVal? "at")
+      (some (← refOf? (← feature.getObjVal? "ref"), ← feature.getObjVal? "properties"))
   | "ポップアップを閉じる" => return .closePopup
   | "描画開始" => return .startDrawing (← j.getObjValAs? String "key")
   | "市を選ぶ" => return .chooseCity (← cityOf? (← j.getObjValAs? String "city"))
@@ -145,6 +190,11 @@ def opOf? (j : Json) : Except String (Op Json Json) := do
   | "確定" => return .commit
   | "取消" => return .cancel
   | "再送" => return .resend
+  | "編集を始める" => return .startEdit
+  | "名前を変える" => return .editName (← j.getObjValAs? String "name")
+  | "備考を変える" => return .editNote (← j.getObjValAs? String "note")
+  | "編集を保存" => return .saveEdit (← j.getObjValAs? String "key")
+  | "読み直す" => return .reload
   | t => throw s!"知らない操作: {t}"
 
 def replyOf? (j : Json) : Except String Reply := do
@@ -157,6 +207,9 @@ def replyOf? (j : Json) : Except String Reply := do
   | "保存失敗" => return .rejected
   | "保存結果不明" => return .unknown
   | "本人が変わった" => return .identityChanged
+  | "読み込めた" => return .loaded (← editOf? (← j.getObjVal? "edit"))
+  | "読み込めない" => return .loadFailed
+  | "競合した" => return .conflict
   | t => throw s!"知らない応答: {t}"
 
 def noticeOf? (j : Json) : Except String Notice := do
@@ -169,7 +222,8 @@ def noticeOf? (j : Json) : Except String Notice := do
 def offered (s : S) : List String :=
   let samples : List (Op Json Json) :=
     [.pressLogin "", .pressLogout, .clickMap .null none, .closePopup, .startDrawing "",
-      .chooseCity .a, .choosePublic false, .commit, .cancel, .resend]
+      .chooseCity .a, .choosePublic false, .commit, .cancel, .resend, .startEdit, .editName "",
+      .editNote "", .saveEdit "", .reload]
   samples.filterMap fun op => (perform s op).map fun _ => opKindName op.kind
 
 def snapshot (s : S) (effects : List (Effect Json)) : Json :=

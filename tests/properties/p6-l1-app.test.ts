@@ -20,7 +20,10 @@ const replyTypes: Record<Reply['type'], true> = {
 	保存成功: true,
 	保存失敗: true,
 	保存結果不明: true,
-	本人が変わった: true
+	本人が変わった: true,
+	読み込めた: true,
+	読み込めない: true,
+	競合した: true
 };
 const isReply = (e: Event): e is Reply => e.type in replyTypes;
 const next = (s: State, e: Event) =>
@@ -66,7 +69,7 @@ const initial: State = init({ id: 'u-a', name: 'A市職員', role: 'a-staff', ca
 const savingKey = (s: State) =>
 	s.kind === 'ログイン済み' && saving(s.screen) ? s.screen.draft.key : null;
 const draftKey = (s: State) =>
-	s.kind === 'ログイン済み' && s.screen.kind !== '閲覧' ? s.screen.draft.key : null;
+	s.kind === 'ログイン済み' && 'draft' in s.screen ? s.screen.draft.key : null;
 
 test('P6 UIの排他: どんな操作列でも、保存中に新しい描画は始まらない', () => {
 	let savingVisits = 0;
