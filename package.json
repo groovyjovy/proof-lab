@@ -25,6 +25,7 @@
 		"setup:tlc": "mkdir -p tools && curl -fsSL -o tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
 		"db:up": "docker compose up -d --wait",
 		"db:reset": "node --env-file=.env scripts/db-reset.ts",
+		"spec:sql": "node scripts/spec-sql.ts",
 		"db:auth-schema": "node --env-file=.env scripts/generate-auth-schema.ts"
 	},
 	"devDependencies": {

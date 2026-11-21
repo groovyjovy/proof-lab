@@ -224,13 +224,14 @@ def authzTable : Json := Id.run do
           rows := rows.push <| Json.mkObj [
             ("role", toJson (roleName role)), ("canEdit", toJson canEdit),
             ("city", toJson (cityName city)), ("public", toJson isPublic),
-            ("canRead", toJson (Authz.canRead u f)), ("canWrite", toJson (Authz.canWrite u city)),
-            ("seesOwner", toJson (Authz.seesOwner u))]
+            ("canRead", toJson (Authz.canRead u f)), ("canWrite", toJson (Authz.canWrite u f)),
+            ("seesOwner", toJson (Authz.seesOwner u f))]
   return Json.arr rows
 
 def respond (line : String) : Except String Json := do
   let j ← Json.parse line
   if (j.getObjVal? "authzTable").toOption.isSome then return authzTable
+  if (j.getObjVal? "policySql").toOption.isSome then return Json.mkObj [("sql", toJson Authz.policySql)]
   if (j.getObjVal? "state").toOption.isSome then return ← branch j
   runTrace j
 

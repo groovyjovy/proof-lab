@@ -35,32 +35,31 @@ language sql immutable as $$
 	select case role when 'a-staff' then 'A' when 'b-staff' then 'B' end
 $$;
 
+-- ここから生成: spec/Spec/Authz.lean の readCond・writeCond・ownerCond から pnpm spec:sql で書き出す。手で書き換えない
 create function app_can_read(city text, public boolean) returns boolean
 language sql stable as $$
-	select coalesce(
-		app_role() = 'admin'
-		or (app_role() = 'viewer' and public)
-		or city = city_of_role(app_role()),
-		false
-	)
+	select coalesce((app_role() = 'admin' or ((app_role() = 'viewer' and public) or city = city_of_role(app_role()))), false)
 $$;
 
-create function app_can_write(city text) returns boolean
+create function app_can_write(city text, public boolean) returns boolean
 language sql stable as $$
-	select coalesce(
-		app_can_edit() and (app_role() = 'admin' or city = city_of_role(app_role())),
-		false
-	)
+	select coalesce((app_can_edit() and (app_role() = 'admin' or city = city_of_role(app_role()))), false)
 $$;
+
+create function app_sees_owner(city text, public boolean) returns boolean
+language sql stable as $$
+	select coalesce(not (app_role() = 'viewer'), false)
+$$;
+-- ここまで生成
 
 alter table feature enable row level security;
 
 create policy feature_read on feature for select using (app_can_read(city, public));
-create policy feature_insert on feature for insert with check (app_can_write(city));
+create policy feature_insert on feature for insert with check (app_can_write(city, public));
 -- with check がないと、自分の市の地物を他市へ移せてしまう(P8)
 create policy feature_update on feature for update
-	using (app_can_write(city))
-	with check (app_can_write(city));
+	using (app_can_write(city, public))
+	with check (app_can_write(city, public));
 
 -- 出口はすべてこのビューを読む。閲覧者には owner_name を返さない(P2)。
 -- security_invoker なので、feature の RLS が呼び出したユーザーで効く(P1・P7)。
@@ -73,7 +72,7 @@ create view feature_visible with (security_invoker = true) as
 		note,
 		version,
 		geom,
-		case when app_role() = 'viewer' then null else owner_name end as owner_name
+		case when app_sees_owner(city, public) then owner_name end as owner_name
 	from feature;
 
 grant select, insert, update on feature to app;

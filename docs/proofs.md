@@ -24,11 +24,12 @@ Lean は `spec/lean-toolchain` の v4.35.0 を使う(7日ルール。v4.36.0 は
 | `spec/Spec/Domain.lean` | 画面と認可で共有する型(ロール・市・本人) |
 | `spec/Spec/App.lean` | 画面の状態機械の仕様。`perform`(差し出した操作の遷移)と `receive`(応答の受け取り) |
 | `spec/Spec/AppProofs.lean` | 画面の状態機械の性質の証明 |
-| `spec/Spec/Authz.lean` | 認可の仕様(RLS の判断、剥奪、版、冪等キー) |
+| `spec/Spec/Authz.lean` | 認可の仕様(RLS の判断を条件の式で書く、剥奪、版、冪等キー)。同じ式から SQL を書き出す |
 | `spec/Spec/AuthzProofs.lean` | 認可の性質の証明 |
 | `spec/Main.lean` | 仕様を実行する窓口。1行の JSON を受け取って1行で答える。JSON の形は TypeScript の型と同じ |
 | `tests/conformance/app.test.ts` | 実装の状態機械と仕様の突き合わせ(ランダムな操作列) |
 | `tests/conformance/exhaustive.test.ts` | 実装の状態機械と仕様の突き合わせ(モデル3の全状態・全イベント) |
+| `scripts/spec-sql.ts`・`tests/conformance/sql.test.ts` | 認可の SQL 関数を仕様から書き出す(`pnpm spec:sql`)。書き出したものとマイグレーションがずれていないかを確かめる |
 | `tests/properties/rules.ts` | 認可の判断表を仕様から引く。性質テストはこれを期待値にして PostgreSQL と突き合わせる |
 | `tests/properties/authz-conformance.test.ts` | 判断表の全行を、PostgreSQL と突き合わせる |
 | `scripts/spec-oracle.ts` | 窓口を起動して問い合わせる |
@@ -72,6 +73,15 @@ L1 は活性(いつか必ず終わる)なので、状態機械だけでは言い
 
 認可の判断は「誰が」「どの地物を」だけで決まり、地物1件ずつに同じ判断をする。だから件数や出口によらない。
 
+### 仕様から SQL を書き出す
+
+読める・書き込める・`owner_name` が見える、の3つの判断は、Lean の中で条件の式(`Cond`)として書いた。
+同じ式を、Lean では評価して性質を証明し(`Cond.eval`)、PostgreSQL へは関数として書き出す(`Cond.sql`)。
+`db/migrations/002_feature.sql` の `app_can_read`・`app_can_write`・`app_sees_owner` は、この書き出したもの(`pnpm spec:sql`)。手で書き換えると `tests/conformance/sql.test.ts` が落ちる(わざと書き換えて確かめた)【測定】。
+式を変えて性質が崩れれば証明が通らず、書き出しを忘れればテストが落ちる。書き出す処理(`Cond.sql`)そのものは証明していないので、PostgreSQL が仕様と同じ判断をすることは、判断表の全行で突き合わせて確かめている。
+
+3つの関数は、どれも行の `city` と `public` を引数に取る形にそろえた。式が引数にない列を使えば、マイグレーションが SQL のエラーで止まる。利用者が決まらない(`app_role()` が null の)ときは、どれも false になる。
+
 ### 公理【測定】
 
 `#print axioms` で、23個のどの定理も Lean の標準の公理(`propext`・`Quot.sound`・`Classical.choice`)だけに依存し、`sorryAx`(書きかけの証明)に依存していないことを確かめた(2026-11-21)。
@@ -102,7 +112,7 @@ AWS の認可言語 Cedar と同じ考え方にした。Cedar は Lean で書い
 
 ## 証明していないもの
 
-- SQL(RLS)そのもの。仕様と同じ判断をすることは、判断表の全行で突き合わせている
+- 条件の式を SQL に書き出す処理(`Cond.sql`)。書き出した SQL が仕様と同じ判断をすることは、判断表の全行で突き合わせている。RLS の残りの部分(ポリシーをどの操作に付けるか、ビューが RLS を通すか)は手で書いていて、性質テストで確かめている
 - 画面(Svelte)の描画。押せるかどうかは、`#lib/ui` の部品が状態機械の差し出す操作から決める作りにして、lint で強制した。正しく描けているかは UI の性質テスト(Bombadil)で確かめる
 - 副作用がいつか必ず応答すること(上の L1)
 - 地図ライブラリ(MapLibre)が自分で取りに行くタイルの通信。状態機械の外にある。タイルの URL に本人(`as`)を書くのは状態機械の状態から作るが、その通信そのものはモデルに入っていない(`docs/screens.md` の「画面とサーバーで本人がずれる」)

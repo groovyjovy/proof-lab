@@ -12,11 +12,11 @@ theorem p1 (u : User) (f : Feature) (c : City) (hc : u.role.city? = some c)
     (h : canRead u f = true) : f.city = c := by
   obtain ⟨role, canEdit⟩ := u
   obtain ⟨city, isPublic⟩ := f
-  cases role <;> cases city <;> cases c <;> simp_all [canRead, Role.city?]
+  cases role <;> cases city <;> cases c <;> simp_all [canRead, readCond, Cond.eval, Role.city?]
 
 /-- P2 属性秘匿: 閲覧者には `owner_name` を返さない。 -/
-theorem p2 (u : User) (h : u.role = .viewer) : seesOwner u = false := by
-  simp [seesOwner, h]
+theorem p2 (u : User) (f : Feature) (h : u.role = .viewer) : seesOwner u f = false := by
+  simp [seesOwner, ownerCond, Cond.eval, h]
 
 /-- P7 公開範囲: 閲覧者が読める地物は、公開の地物だけ。 -/
 theorem p7 (u : User) (f : Feature) (hv : u.role = .viewer) (h : canRead u f = true) :
@@ -24,19 +24,21 @@ theorem p7 (u : User) (f : Feature) (hv : u.role = .viewer) (h : canRead u f = t
   obtain ⟨role, canEdit⟩ := u
   obtain ⟨city, isPublic⟩ := f
   simp at hv; subst hv
-  cases city <;> simp_all [canRead, Role.city?]
+  cases city <;> simp_all [canRead, readCond, Cond.eval, Role.city?]
 
 /-- P8 書き込みの地域分離(1): 書き込めるのは編集権限がある人だけ。閲覧者は何も書き込めない。 -/
-theorem p8_needs_permission (u : User) (c : City) (h : canWrite u c = true) :
+theorem p8_needs_permission (u : User) (f : Feature) (h : canWrite u f = true) :
     u.canEdit = true ∧ u.role ≠ .viewer := by
   obtain ⟨role, canEdit⟩ := u
-  cases role <;> cases c <;> simp_all [canWrite, Role.city?]
+  obtain ⟨city, isPublic⟩ := f
+  cases role <;> cases city <;> simp_all [canWrite, writeCond, Cond.eval, Role.city?]
 
 /-- P8 書き込みの地域分離(2): 市職員が書き込めるのは担当の市だけ。 -/
-theorem p8_own_city (u : User) (c home : City) (hc : u.role.city? = some home)
-    (h : canWrite u c = true) : c = home := by
+theorem p8_own_city (u : User) (f : Feature) (home : City) (hc : u.role.city? = some home)
+    (h : canWrite u f = true) : f.city = home := by
   obtain ⟨role, canEdit⟩ := u
-  cases role <;> cases c <;> cases home <;> simp_all [canWrite, Role.city?]
+  obtain ⟨city, isPublic⟩ := f
+  cases role <;> cases city <;> cases home <;> simp_all [canWrite, writeCond, Cond.eval, Role.city?]
 
 /-- P8 書き込みの地域分離(3): 市職員は、自分の市の地物を他市へ移せない(編集の前と後の両方を見る)。 -/
 theorem p8_no_move (u : User) (before after : Feature) (home : City)
