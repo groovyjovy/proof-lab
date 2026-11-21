@@ -4,6 +4,7 @@ import type { Me } from '#lib/domain.ts';
 import type { Area, State } from '#lib/app/machine.ts';
 import { check } from '../../model/check.ts';
 import * as m3 from '../../model/model3-app.ts';
+import { initial as tileInitial, tileSteps } from '../../model/model3-tiles.ts';
 import { startOracle, type Oracle } from '../../scripts/spec-oracle.ts';
 import { applyEvent, normalize, snapshot, type Event } from './implementation.ts';
 
@@ -37,7 +38,8 @@ const branches: Event[] = [
 	{ op: { type: 'ログアウトを押す' } },
 	{ op: { type: '地図をクリック', at: [0, 0], feature: null } },
 	...[
-		{ id: 1, city: 'A' as const, public: true },
+		{ id: 1, city: 'A' as const, public: true, version: 0 },
+		{ id: 1, city: 'A' as const, public: true, version: 1 },
 		{ id: 2, city: 'B' as const, public: false }
 	].map((ref): Event => ({
 		op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: { name: 'p' } } }
@@ -70,6 +72,12 @@ const branches: Event[] = [
 			edit: { ref: { id: 1, city: 'A', public: true }, version: 5, name: '読んだ名前', note: '' }
 		}
 	},
+	{
+		reply: {
+			type: '読み込めた',
+			edit: { ref: { id: 1, city: 'A', public: true }, version: 0, name: '読んだ名前', note: '' }
+		}
+	},
 	{ reply: { type: '読み込めない' } },
 	{ reply: { type: '競合した' } },
 	{ notice: { type: '地図の本人が変わった' } },
@@ -98,13 +106,17 @@ const branches: Event[] = [
 	])
 ];
 
-test('範囲内の網羅: モデル3の4範囲がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
+test('範囲内の網羅: モデル3がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
 	const states = new Map<string, State>();
 	for (const steps of [m3.steps, m3.editSteps, m3.searchSteps, m3.transferSearchSteps])
 		check(m3.init, steps, (w) => {
 			states.set(JSON.stringify(w.app), w.app);
 			return true;
 		});
+	check(tileInitial, tileSteps(), (w) => {
+		states.set(JSON.stringify(w.app), w.app);
+		return true;
+	});
 	const answers = await Promise.all(
 		[...states.values()].map((state) => oracle.ask({ state, branches }))
 	);
@@ -119,7 +131,7 @@ test('範囲内の網羅: モデル3の4範囲がたどる画面のすべての�
 		expect(actual, JSON.stringify(state)).toEqual(normalize(answers[i]));
 	});
 	// 作成・編集の範囲と検索の範囲で重なる状態(ログイン前後の閲覧など)は1つに数える
-	expect(states.size).toBe(7183);
+	expect(states.size).toBe(8359);
 	// docs/proofs.md に書いた数が、今の数と同じか(状態機械を変えて書き直し忘れると落ちる)
 	const n = (x: number) => x.toLocaleString('en-US');
 	expect(readFileSync('docs/proofs.md', 'utf8')).toContain(

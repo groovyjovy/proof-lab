@@ -39,6 +39,8 @@ import Spec
 #print axioms App.p15_other_user_ignored
 #print axioms App.p15_same_permission_ignored
 #print axioms App.p15_resend_rejected_unknown
+#print axioms App.p16_start_keeps_tile_version
+#print axioms App.p16_edit_matches_tile
 
 -- 認可とサーバー(spec/Spec/AuthzProofs.lean)
 #print axioms Authz.p1

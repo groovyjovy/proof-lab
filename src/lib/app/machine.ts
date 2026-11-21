@@ -2,7 +2,7 @@ import { canRead, canWrite, type City, type Me } from '#lib/domain.ts';
 
 export type Point = [lng: number, lat: number];
 export type Draft = { key: string; city: City; public: boolean; points: Point[] };
-export type FeatureRef = { id: number; city: City; public: boolean };
+export type FeatureRef = { id: number; city: City; public: boolean; version?: number };
 export type Hit = { ref: FeatureRef; properties: Record<string, unknown> };
 export type Selected = { at: Point } & Hit;
 /** 編集中の値。版は、サーバーから読み込んだときのもの(P4)。 */
@@ -47,6 +47,7 @@ export type LoggedIn = {
 	screen: Screen;
 	map: MapView;
 	search: Search;
+	mapLag: [id: number, version: number] | null;
 };
 
 /** 地図(`map`)は、どの状態にもある。ログインし直しても、検索の番号は続きから振る。 */
@@ -124,6 +125,7 @@ const fresh = (me: Me, map: MapView): LoggedIn => ({
 	kind: 'ログイン済み',
 	me,
 	tiles: 0,
+	mapLag: null,
 	screen: { kind: '閲覧', selected: null },
 	map,
 	search: { pending: null, shown: null, since: map.issued }
@@ -165,6 +167,17 @@ function searchTo(s: LoggedIn, screen: Screen): Step {
 
 /** 保存が終わった(または取り消した)ので、タイルと一覧を読み直す。 */
 const refreshTo = (s: LoggedIn, screen: Screen) => searchTo({ ...s, tiles: s.tiles + 1 }, screen);
+
+const canStartTileEdit = (s: LoggedIn, ref: FeatureRef) =>
+	canWrite(s.me, ref) &&
+	ref.version !== undefined &&
+	(s.mapLag?.[0] !== ref.id || ref.version >= s.mapLag[1]);
+
+const reloadRef = ({ id, city, public: visible }: FeatureRef): FeatureRef => ({
+	id,
+	city,
+	public: visible
+});
 
 export function offers(s: State): Offers {
 	switch (s.kind) {
@@ -214,7 +227,9 @@ function onScreen(s: LoggedIn): Offers {
 					}),
 				ポップアップを閉じる: v.selected ? () => to({ kind: '閲覧', selected: null }) : undefined,
 				編集を始める:
-					v.selected && canWrite(s.me, v.selected.ref) ? () => load(v.selected!.ref) : undefined,
+					v.selected && canStartTileEdit(s, v.selected.ref)
+						? () => load(v.selected!.ref)
+						: undefined,
 				描画開始: s.me.canEdit
 					? (e) =>
 							to({
@@ -253,7 +268,7 @@ function onScreen(s: LoggedIn): Offers {
 				名前を変える: (op) => to({ ...v, edit: { ...e, name: op.name } }),
 				備考を変える: (op) => to({ ...v, edit: { ...e, note: op.note } }),
 				編集を保存: canWrite(s.me, e.ref) ? (op) => update(e, op.key) : undefined,
-				読み直す: v.stale ? () => load(e.ref) : undefined,
+				読み直す: v.stale ? () => load(reloadRef(e.ref)) : undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
 		}
@@ -267,7 +282,7 @@ function onScreen(s: LoggedIn): Offers {
 			};
 		case '競合':
 			return {
-				読み直す: () => load(v.edit.ref),
+				読み直す: () => load(reloadRef(v.edit.ref)),
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
 		case '保存中':
@@ -332,22 +347,38 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 			}
 		case '読込中':
 			switch (r.type) {
-				case '読み込めた':
-					return to({ kind: '編集中', edit: r.edit, notice: null, stale: false });
+				case '読み込めた': {
+					const { id, version } = v.ref;
+					if (r.edit.ref.id !== id || (version !== undefined && r.edit.version !== version))
+						return refreshTo(
+							{ ...s, mapLag: [id, r.edit.version] },
+							{ kind: '閲覧', selected: null }
+						);
+					return only({
+						...s,
+						mapLag: s.mapLag?.[0] === id ? null : s.mapLag,
+						screen: { kind: '編集中', edit: r.edit, notice: null, stale: false }
+					});
+				}
 				case '読み込めない':
 					return to({ kind: '閲覧', selected: null });
 				default:
 					return undefined;
 			}
 		case '更新中':
-		case '更新の再送中':
+		case '更新の再送中': {
+			const refresh = () =>
+				refreshTo(
+					{ ...s, mapLag: [v.edit.ref.id, v.edit.version + 1] },
+					{ kind: '閲覧', selected: null }
+				);
 			switch (r.type) {
 				case '保存成功':
-					return refreshTo(s, { kind: '閲覧', selected: null });
+					return refresh();
 				case '保存結果不明':
 					// 効いたという知らせが先に届いていれば、応答が分からなくても成功(P14)
 					return v.applied
-						? refreshTo(s, { kind: '閲覧', selected: null })
+						? refresh()
 						: to({ kind: '更新結果不明', edit: v.edit, key: v.key, notice: null });
 				case '保存失敗':
 					// 送り直しが拒否されても、前に送ったときに効いたかもしれない(P15)
@@ -361,6 +392,7 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 				default:
 					return undefined;
 			}
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ structure Ref where
   id : Nat
   city : City
   isPublic : Bool
+  version : Option Nat := none
   deriving DecidableEq, Repr
 
 def Ref.feature (r : Ref) : Authz.Feature := ⟨r.city, r.isPublic⟩
@@ -100,6 +101,8 @@ structure Session (P F : Type) where
   screen : Screen P F
   map : MapView P
   search : Search P F
+  /-- 編集を待つ地物の ID と、確認済みの DB の版。 -/
+  mapLag : Option (Nat × Nat) := none
 
 /-- 地図(`MapView`)は、どの状態にもある。ログインし直しても、検索の番号は続きから振る。 -/
 inductive State (P F : Type) where
@@ -261,6 +264,19 @@ def Session.searchTo (s : Session P F) (screen : Screen P F) : Step P F :=
 def Session.refreshTo (s : Session P F) (screen : Screen P F) : Step P F :=
   { s with tiles := s.tiles + 1 }.searchTo screen
 
+def Session.offersTileEdit (s : Session P F) (ref : Ref) : Bool :=
+  canEditFeature s.me ref && match ref.version, s.mapLag with
+  | none, _ => false
+  | some v, some (id, latest) => id != ref.id || v >= latest
+  | some _, none => true
+
+def Ref.matchesLoad (r : Ref) (e : Edit) : Prop :=
+  r.id = e.ref.id ∧ (r.version = none ∨ r.version = some e.version)
+
+instance (r : Ref) (e : Edit) : Decidable (r.matchesLoad e) := by
+  unfold Ref.matchesLoad
+  infer_instance
+
 def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .clickMap pos feature =>
     match s.screen with
@@ -306,7 +322,7 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .startEdit =>
     match s.screen with
     | .view (some sel) =>
-      if canEditFeature s.me sel.ref then some (s.to (.loading sel.ref) [.load sel.ref.id s.me.id])
+      if s.offersTileEdit sel.ref then some (s.to (.loading sel.ref) [.load sel.ref.id s.me.id])
       else none
     | _ => none
   | .editName name =>
@@ -325,7 +341,8 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .reload =>
     match s.screen with
-    | .conflicted e | .editing e _ true => some (s.to (.loading e.ref) [.load e.ref.id s.me.id])
+    | .conflicted e | .editing e _ true =>
+      some (s.to (.loading { e.ref with version := none }) [.load e.ref.id s.me.id])
     | _ => none
   | .pressLogin _ | .pressLogout => none
 
@@ -345,14 +362,17 @@ def identityChangedMessage : String :=
 def onReply (s : Session P F) : Reply F → Option (Step P F)
   | .saved =>
     match s.screen with
-    | .saving _ | .resaving _ | .updating _ _ _ | .reupdating _ _ _ => some (s.refreshTo (.view none))
+    | .saving _ | .resaving _ => some (s.refreshTo (.view none))
+    | .updating e _ _ | .reupdating e _ _ =>
+      some ({ s with mapLag := some (e.ref.id, e.version + 1) }.refreshTo (.view none))
     | _ => none
   | .unknown =>
     match s.screen with
     | .saving d | .resaving d => some (s.to (.unknown d false))
     | .updating e key applied | .reupdating e key applied =>
       -- 効いたという知らせが先に届いていれば、応答が分からなくても成功(P14)
-      some (if applied then s.refreshTo (.view none) else s.to (.updateUnknown e key false))
+      some (if applied then { s with mapLag := some (e.ref.id, e.version + 1) }.refreshTo (.view none)
+        else s.to (.updateUnknown e key false))
     | _ => none
   | .rejected =>
     match s.screen with
@@ -366,7 +386,11 @@ def onReply (s : Session P F) : Reply F → Option (Step P F)
     if s.screen.isBusy then some ⟨.loggedOut (some identityChangedMessage) s.map, []⟩ else none
   | .loaded e =>
     match s.screen with
-    | .loading _ => some (s.to (.editing e false false))
+    | .loading ref =>
+      if ref.matchesLoad e then
+        some ({ s with mapLag := s.mapLag.filter (·.1 != ref.id) }.to (.editing e false false))
+      else
+        some ({ s with mapLag := some (ref.id, e.version) }.refreshTo (.view none))
     | _ => none
   | .loadFailed =>
     match s.screen with

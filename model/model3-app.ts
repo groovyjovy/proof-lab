@@ -271,7 +271,14 @@ function allOps(w: World): [string, Op][] {
 			? []
 			: Object.entries(points).flatMap(([name, at]): [string, Op][] => [
 					[`地図の${name}をクリック`, { type: '地図をクリック', at, feature: null }],
-					[`${name}の地物をクリック`, { type: '地図をクリック', at, feature: feature1 }]
+					[
+						`${name}の地物をクリック`,
+						{
+							type: '地図をクリック',
+							at,
+							feature: { ...feature1, ref: { ...feature1.ref, version: w.row.version } }
+						}
+					]
 				])),
 		['ポップアップを閉じる', { type: 'ポップアップを閉じる' }],
 		...(w.keysUsed < maxKeys

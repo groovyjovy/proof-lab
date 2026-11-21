@@ -58,12 +58,14 @@ def draftOf? (j : Json) : Except String (Draft Json) := do
 
 /-- 結果の知らせ(`notice`)は、決まった文字列か `null`。 -/
 def refToJson (r : Ref) : Json :=
-  Json.mkObj [("id", toJson r.id), ("city", toJson (cityName r.city)), ("public", toJson r.isPublic)]
+  Json.mkObj ([("id", toJson r.id), ("city", toJson (cityName r.city)), ("public", toJson r.isPublic)] ++
+    (r.version.toList.map fun v => ("version", toJson v)))
 
 def refOf? (j : Json) : Except String Ref := do
   return { id := ← j.getObjValAs? Nat "id"
            city := ← cityOf? (← j.getObjValAs? String "city")
-           isPublic := ← j.getObjValAs? Bool "public" }
+           isPublic := ← j.getObjValAs? Bool "public"
+           version := (j.getObjValAs? Nat "version").toOption }
 
 def editToJson (e : Edit) : Json :=
   Json.mkObj [("ref", refToJson e.ref), ("version", toJson e.version), ("name", toJson e.name),
@@ -164,7 +166,8 @@ def sessionOf? (j : Json) : Except String (Session Json Json) := do
            tiles := ← j.getObjValAs? Nat "tiles"
            screen := ← screenOf? (← j.getObjVal? "screen")
            map := ← mapOf? (← j.getObjVal? "map")
-           search := ← searchOf? (← j.getObjVal? "search") }
+           search := ← searchOf? (← j.getObjVal? "search")
+           mapLag := (j.getObjValAs? (Nat × Nat) "mapLag").toOption }
 
 def stateOf? (j : Json) : Except String S := do
   match ← j.getObjValAs? String "kind" with
@@ -208,7 +211,8 @@ def screenToJson : Screen Json Json → Json
 
 def sessionToJson (s : Session Json Json) : Json :=
   Json.mkObj [("kind", "ログイン済み"), ("me", meToJson s.me), ("tiles", toJson s.tiles),
-    ("screen", screenToJson s.screen), ("map", mapToJson s.map), ("search", searchToJson s.search)]
+    ("screen", screenToJson s.screen), ("map", mapToJson s.map), ("search", searchToJson s.search),
+    ("mapLag", nullable (s.mapLag.map toJson))]
 
 def stateToJson : S → Json
   | .loggedOut err map =>

@@ -119,7 +119,8 @@
 		const p = hit?.properties;
 		if (typeof hit?.id !== 'number' || (p?.city !== 'A' && p?.city !== 'B')) return null;
 		if (typeof p.public !== 'boolean') return null;
-		return { ref: { id: hit.id, city: p.city as City, public: p.public }, properties: p };
+		const version = Number.isSafeInteger(p.version) && p.version >= 0 ? p.version : undefined;
+		return { ref: { id: hit.id, city: p.city as City, public: p.public, version }, properties: p };
 	}
 
 	function onMapClick(e: MapMouseEvent) {
@@ -246,6 +247,11 @@
 		</div>
 		{#if session.screen.kind === '閲覧'}
 			<p class="text-gray-600">地物をクリックすると属性を表示します。</p>
+			{#if session.mapLag && (!session.screen.selected || (session.screen.selected.ref.id === session.mapLag[0] && (session.screen.selected.ref.version ?? -1) < session.mapLag[1]))}
+				<p class="text-amber-800" role="status" data-map-lag>
+					地図へ反映中です。新しい版の地物を選んでください。
+				</p>
+			{/if}
 			<ActionButton
 				class="w-full rounded bg-green-600 px-3 py-1.5 text-white"
 				action={actions.描画開始}

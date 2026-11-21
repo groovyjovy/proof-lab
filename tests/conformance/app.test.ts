@@ -117,7 +117,13 @@ const reply: fc.Arbitrary<Reply> = fc.oneof(
 const editAndSave = fc
 	.tuple(ref, edit, fc.constantFrom<Reply['type']>('保存結果不明', '競合した', '保存失敗'))
 	.map(([ref, loaded, outcome]): Event[] => [
-		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: {} } } },
+		{
+			op: {
+				type: '地図をクリック',
+				at: [0, 0],
+				feature: { ref: { ...ref, version: loaded.version }, properties: {} }
+			}
+		},
 		{ op: { type: '編集を始める' } },
 		{ reply: { type: '読み込めた', edit: { ...loaded, ref } } },
 		{ op: { type: '名前を変える', name: 'n1' } },
@@ -129,7 +135,13 @@ const editAndSave = fc
 const editWithChanges = fc
 	.tuple(ref, edit, fc.constantFrom('u-admin', 'u-a'))
 	.map(([ref, loaded, as]): Event[] => [
-		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: {} } } },
+		{
+			op: {
+				type: '地図をクリック',
+				at: [0, 0],
+				feature: { ref: { ...ref, version: loaded.version }, properties: {} }
+			}
+		},
 		{ op: { type: '編集を始める' } },
 		{ reply: { type: '読み込めた', edit: { ...loaded, ref } } },
 		{
@@ -162,7 +174,13 @@ const editAndRetryAfterRevoke = fc.tuple(me, edit).map(([user, loaded]): Event[]
 		{ op: { type: 'ログインを押す', email: 'admin@example.com' } },
 		{ reply: { type: 'ログイン成功', me: editor } },
 		{ notice: { type: '権限が変わった', me: editor } },
-		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref: loaded.ref, properties: {} } } },
+		{
+			op: {
+				type: '地図をクリック',
+				at: [0, 0],
+				feature: { ref: { ...loaded.ref, version: loaded.version }, properties: {} }
+			}
+		},
 		{ op: { type: '編集を始める' } },
 		{ reply: { type: '読み込めた', edit: loaded } },
 		{ op: { type: '名前を変える', name: '編集後' } },

@@ -323,11 +323,11 @@ theorem ListingOk.frozen {s : Session P F} {fl : List (Effect P)} (h : ListingOk
 theorem updatingOk_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) :
     UpdatingOk server s := by
   intro k hk
-  obtain ⟨me, tiles, screen, map, search⟩ := s
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
   cases screen <;> simp_all [Screen.appliedKey?, Screen.isBusy]
 
 theorem inflight_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) : s.inflight = [] := by
-  obtain ⟨me, tiles, screen, map, search⟩ := s
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
   cases screen <;> simp_all [Session.inflight, Screen.isBusy]
 
 /-! ## 不変条件 -/
@@ -344,7 +344,7 @@ theorem inv_searchTo {s : Session P F} {screen : Screen P F} {fl : List (Effect 
     (hfrozen : FrozenOk server.ok s) (hupd : UpdatingOk server ({ s with screen } : Session P F))
     (hsince : SinceOk s) :
     Inv server ⟨(s.searchTo screen).state, fl ++ (s.searchTo screen).effects⟩ := by
-  obtain ⟨me, tiles, screen₀, ⟨area, issued⟩, ⟨pending, shown, since⟩⟩ := s
+  obtain ⟨me, tiles, screen₀, ⟨area, issued⟩, ⟨pending, shown, since⟩, mapLag⟩ := s
   obtain ⟨hnone, hshown⟩ := hfrozen
   cases area with
   | none =>
@@ -371,7 +371,7 @@ theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
     simp only [Inv] at hinv
     obtain ⟨hlane, hsearch, hok, hlist, hupd, hsince⟩ := hinv
     have hfrozen := hlist.frozen
-    obtain ⟨me, tiles, screen, map, search⟩ := s
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
     cases op <;> cases screen <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
     all_goals (try split at h) <;> (try simp at h)
     all_goals first
@@ -420,13 +420,13 @@ theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Eff
     have hs := hs.remove
     have hlist' := hlist.remove_lane he
     have hfrozen := hlist.frozen
-    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
     cases screen <;> simp only [Session.inflight] at hl
     all_goals first
       | exact (lane_nonempty he hl).elim
       | (obtain ⟨rfl, hl⟩ := lane_single he hl
          cases hans <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;>
-           (try split at h) <;> subst h)
+           (try split at h) <;> (try simp only [Option.some.injEq] at h) <;> subst h)
     all_goals first
       | (apply inv_searchTo <;>
            simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, FrozenOk, UpdatingOk] <;> done)
@@ -459,7 +459,7 @@ theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Q
     simp only [Inv, lane_split_search] at hinv
     obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
     have hs' := hs.remove
-    obtain ⟨me, tiles, screen, map, ⟨pending, shown, since⟩⟩ := sess
+    obtain ⟨me, tiles, screen, map, ⟨pending, shown, since⟩, mapLag⟩ := sess
     obtain ⟨hsi, hsp, hss⟩ := hsince
     simp only [receive, onSearched, Option.some.injEq] at h
     subst h
@@ -574,7 +574,7 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
       simp only [notify]
       split
       · rename_i hactor
-        obtain ⟨me, tiles, screen, map, search⟩ := s
+        obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
         cases screen <;> simp only [onChanged, Session.refreshTo] <;> (try split)
         all_goals first
           | (apply inv_searchTo <;>
@@ -610,7 +610,7 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
       simp only [notify]
       split
       · rename_i hid
-        obtain ⟨me, tiles, screen, map, search⟩ := s
+        obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
         simp only at hid
         cases screen <;> simp only [Session.withPermission, Session.refreshTo] <;> apply inv_searchTo <;>
           simp_all [Session.inflight, SelectedOk, SinceOk, UpdatingOk, FrozenOk, Screen.isBusy]
@@ -620,7 +620,7 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
       obtain ⟨hl, hs, hb, hok, hf, hsince⟩ := hinv
       simp only [notify]
       split
-      · obtain ⟨me, tiles, screen, map, search⟩ := s
+      · obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
         cases screen <;> simp_all [Inv, Session.withPermission, SelectedOk, SinceOk, FrozenOk,
           Screen.isBusy]
       · simpa [Inv] using ⟨hl, hs, hb, hok, hf, hsince⟩
@@ -656,11 +656,11 @@ theorem replies_accepted {sys : Sys P F} {e : Effect P} {r : Reply F}
       simp only [Inv] at hinv; rw [hinv.1] at hl; simp at hl; subst hl
       cases hans <;> simp [receive]
     | loggedIn s =>
-      obtain ⟨me, tiles, screen, map, search⟩ := s
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
       simp only [Inv] at hinv
       rw [hinv.1] at hl
       cases screen <;> simp [Session.inflight] at hl <;> subst hl <;> cases hans <;>
-        simp [receive, onReply, Screen.isBusy]
+        simp [receive, onReply, Screen.isBusy] <;> split <;> rfl
   · cases hans <;> simp [Effect.seq?] at hs <;> cases app <;> simp [receive]
 
 /-- 検索のほかの副作用は、飛んでいるのは高々1つ。だから、その応答には「どの副作用の応答か」を書かなくてよい。
@@ -671,7 +671,7 @@ theorem lane_single_flight {sys : Sys P F} (h : Reachable server sys) :
   obtain ⟨app, fl⟩ := sys
   cases app with
   | loggedIn s =>
-    obtain ⟨me, tiles, screen, map, search⟩ := s
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
     simp only [Inv] at hinv
     rw [hinv.1]
     cases screen <;> simp [Session.inflight]
@@ -682,7 +682,7 @@ theorem p6 (s : State P F) (key : String) (h : s.isBusy = true) :
     perform s (.startDrawing key) = none := by
   cases s with
   | loggedIn s =>
-    obtain ⟨me, tiles, screen, map, search⟩ := s
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
     cases screen <;> simp_all [State.isBusy, Screen.isBusy, perform, onScreen]
   | _ => simp [State.isBusy] at h
 
@@ -714,9 +714,10 @@ theorem onSearched_effects (s : Session P F) (seq : Nat) (r : SearchResult F) :
 theorem l1_exit {s : Session P F} {e : Effect P} {r : Reply F} {st : Step P F}
     (he : e ∈ s.inflight) (hans : Answers server e r) (h : receive (.loggedIn s) r = some st) :
     st.state.isBusy = false := by
-  obtain ⟨me, tiles, screen, map, search⟩ := s
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
   cases screen <;> simp [Session.inflight] at he <;> subst he <;> cases hans <;>
     simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;> (try split at h) <;>
+    (try simp only [Option.some.injEq] at h) <;>
     subst h <;> (try rw [searchTo_isBusy]) <;> simp [Session.to, State.isBusy, Screen.isBusy]
 
 /-- 応答を受け取って出す副作用は、検索だけ。保存などを送るのは、利用者の操作だけ。
@@ -729,9 +730,9 @@ theorem receive_only_searches {s : State P F} {r : Reply F} {st : Step P F}
   | _ =>
     cases s with
     | loggedIn sess =>
-      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
       cases screen <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;>
-        (try split at h) <;>
+        (try split at h) <;> (try simp only [Option.some.injEq] at h) <;>
         (try subst h) <;> (try simp [Session.to]) <;> exact fun e _ _ _ he => by subst he; rfl
     | _ => simp [receive] at h <;> (try subst h) <;> (try simp) <;>
         exact fun e _ _ _ he => by subst he; rfl
@@ -769,7 +770,7 @@ theorem p10_perform {s : State P F} {op : Op P F} {st : Step P F} {d : Draft P}
       ∀ d' a, Effect.save d' a ∈ st.effects → d' = d := by
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
     cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
       cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h <;> subst h <;>
       (try simp_searchTo) <;>
@@ -785,7 +786,7 @@ theorem p10_receive {s : State P F} {r : Reply F} {st : Step P F} {d : Draft P}
   refine ⟨?_, receive_only_searches h⟩
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen, map, ⟨pending, shown⟩⟩ := sess
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
     cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
       cases r <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;> subst h
     all_goals first
@@ -807,7 +808,7 @@ theorem p10_receive {s : State P F} {r : Reply F} {st : Step P F} {d : Draft P}
 theorem p10_enter {sess : Session P F} {d : Draft P} {st : Step P F}
     (hs : sess.screen = .saving d ∨ sess.screen = .resaving d)
     (h : receive (.loggedIn sess) .unknown = some st) : st.state.doubtful? = some d := by
-  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
   rcases hs with hs | hs <;> simp at hs <;> subst hs <;> simp [receive, onReply, Screen.isBusy] at h <;>
     subst h <;> simp [State.doubtful?, State.session?, Session.to, Screen.doubtful?]
 
@@ -818,7 +819,7 @@ theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful
   | tilesIdentityChanged =>
     cases s with
     | loggedIn sess =>
-      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
       cases screen <;> simp_all [notify, Screen.isBusy, State.doubtful?, State.draft?,
         State.session?, Screen.doubtful?]
     | _ => simp_all [notify]
@@ -828,7 +829,7 @@ theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful
   | permissionChanged me' =>
     cases s with
     | loggedIn sess =>
-      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
       simp only [notify]
       split
       · cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
@@ -836,7 +837,7 @@ theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful
           simp [Screen.doubtful?]
       · simp_all
     | loggingOut sess =>
-      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
       simp only [notify]
       split
       · cases screen <;> simp_all [State.doubtful?, State.draft?, State.session?,
@@ -846,7 +847,7 @@ theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful
   | changed c =>
     cases s with
     | loggedIn sess =>
-      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
       simp only [notify]
       split
       · cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
@@ -879,7 +880,7 @@ theorem requests_carry_identity {sys : Sys P F} {e : Effect P} {a : String}
   obtain ⟨app, fl⟩ := sys
   cases app with
   | loggedIn s =>
-    obtain ⟨me, tiles, screen, map, search⟩ := s
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
     simp only [Inv] at hinv
     rw [hinv.1] at he
     cases screen <;> simp [Session.inflight] at he <;> subst he <;> simp [Effect.actor?] at ha
@@ -897,7 +898,7 @@ theorem p4_ops_keep_version {s : State P F} {op : Op P F} {st : Step P F} {e' : 
     ∃ e, s.edit? = some e ∧ e'.version = e.version ∧ e'.ref = e.ref := by
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
     cases screen <;> cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
     all_goals (try split at h) <;> (try simp at h)
     all_goals first
@@ -913,7 +914,7 @@ theorem p4_ops_keep_version {s : State P F} {op : Op P F} {st : Step P F} {e' : 
 theorem p4_no_update_after_conflict {sess : Session P F} {e : Edit} {op : Op P F} {st : Step P F}
     (hs : sess.screen = .conflicted e) (h : perform (.loggedIn sess) op = some st) :
     ∀ e' k a, Effect.update e' k a ∉ st.effects := by
-  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
   simp at hs; subst hs
   cases op <;> simp [perform, onScreen, Screen.isBusy] at h <;> subst h <;> simp [Session.to]
 
@@ -923,7 +924,7 @@ theorem p12_resend_same {sess : Session P F} {e : Edit} {key : String} {failed :
     {op : Op P F} {st : Step P F} (hs : sess.screen = .updateUnknown e key failed)
     (h : perform (.loggedIn sess) op = some st) :
     ∀ e' k a, Effect.update e' k a ∈ st.effects → e' = e ∧ k = key := by
-  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
   simp at hs; subst hs
   cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h <;> subst h <;>
     simp [Session.to]
@@ -933,7 +934,7 @@ theorem p12_resend_same {sess : Session P F} {e : Edit} {key : String} {failed :
 theorem p12_unknown_keeps {sess : Session P F} {e : Edit} {key : String} {st : Step P F}
     (hs : sess.screen = .updating e key false) (h : receive (.loggedIn sess) .unknown = some st) :
     st.state = .loggedIn { sess with screen := .updateUnknown e key false } := by
-  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
   simp at hs; subst hs
   simp [receive, onReply] at h; subst h; rfl
 
@@ -943,7 +944,7 @@ theorem offer_depends_on_kind_only (s : State P F) (op₁ op₂ : Op P F)
     (hk : op₁.kind = op₂.kind) : (perform s op₁).isSome = (perform s op₂).isSome := by
   cases op₁ <;> cases op₂ <;> simp [Op.kind] at hk <;>
     cases s <;> simp [perform] <;>
-    (try rename_i s; obtain ⟨me, tiles, screen, map, search⟩ := s; cases screen <;> simp [onScreen]) <;>
+    (try rename_i s; obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s; cases screen <;> simp [onScreen]) <;>
     (try split <;> simp)
 
 /-! ## 範囲の検索(P13): 応答の順序が入れ替わっても、一覧を取り違えない -/
@@ -1035,7 +1036,7 @@ theorem notice_keeps_busy (s : State P F) (n : Notice P) (h : s.isBusy = true) :
     (notify s n).state.isBusy = true := by
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
     simp only [State.isBusy] at h
     cases n with
     | tilesIdentityChanged => simp [notify, h, State.isBusy]
@@ -1182,7 +1183,7 @@ theorem p14_update_success_applied {sys : Sys P F} {s s' : Session P F} {e : Edi
 theorem p15_commit_permitted {s : Session P F} {op : Op P F} {st : Step P F} {d : Draft P}
     {a : String} (h : perform (.loggedIn s) op = some st) (hs : Effect.save d a ∈ st.effects)
     (hop : op.kind ≠ .resend) : canDraw s.me d = true := by
-  obtain ⟨me, tiles, screen, map, search⟩ := s
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
   cases op <;> simp [Op.kind] at hop <;> cases screen <;>
     simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
   all_goals (try split at h) <;> (try simp at h)
@@ -1198,7 +1199,7 @@ theorem p15_commit_permitted {s : Session P F} {op : Op P F} {st : Step P F} {d 
 theorem p15_save_edit_permitted {s : Session P F} {op : Op P F} {st : Step P F} {e : Edit}
     {k a : String} (h : perform (.loggedIn s) op = some st) (hs : Effect.update e k a ∈ st.effects)
     (hop : op.kind ≠ .resend) : canEditFeature s.me e.ref = true := by
-  obtain ⟨me, tiles, screen, map, search⟩ := s
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s
   cases op <;> simp [Op.kind] at hop <;> cases screen <;>
     simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
   all_goals (try split at h) <;> (try simp at h)
@@ -1238,7 +1239,7 @@ theorem p15_listing_since {sys : Sys P F} {s : Session P F} {l : Listing P F}
 theorem p15_change_applied {s : Session P F} {me : Me} (hid : me.id = s.me.id) (hne : me ≠ s.me) :
     ∃ s', (notify (.loggedIn s) (.permissionChanged me)).state = .loggedIn s' ∧ s'.me = me ∧
       s'.search.shown = none ∧ ∀ sel, s'.screen ≠ .view (some sel) := by
-  obtain ⟨me₀, tiles, screen, ⟨area, issued⟩, search⟩ := s
+  obtain ⟨me₀, tiles, screen, ⟨area, issued⟩, search, mapLag⟩ := s
   simp only at hid hne
   cases area <;> cases screen <;>
     simp [notify, hid, hne, Session.withPermission, Session.refreshTo, Session.searchTo, Session.to]
@@ -1257,7 +1258,7 @@ theorem p15_resend_rejected_unknown {sess : Session P F} {e : Edit} {key : Strin
     {st : Step P F} (hs : sess.screen = .reupdating e key a)
     (h : receive (.loggedIn sess) .rejected = some st) :
     st.state = .loggedIn { sess with screen := .updateUnknown e key true } := by
-  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  obtain ⟨me, tiles, screen, map, search, mapLag⟩ := sess
   simp at hs; subst hs
   simp [receive, onReply] at h; subst h; rfl
 
@@ -1265,5 +1266,42 @@ theorem p15_resend_rejected_unknown {sess : Session P F} {e : Edit} {key : Strin
 theorem p15_other_user_ignored {s : Session P F} {me : Me} (h : me.id ≠ s.me.id) :
     notify (.loggedIn s) (.permissionChanged me) = ⟨.loggedIn s, []⟩ := by
   simp [notify, h]
+
+/-- 地図から読み込みに入るとき、クリックされた地物の版を読み込み待ちの状態に保存する。 -/
+theorem p16_start_keeps_tile_version {s s' : Session P F} {sel : Selected P F}
+    {st : Step P F} (hsel : s.screen = .view (some sel))
+    (h : perform (.loggedIn s) .startEdit = some st)
+    (hs : st.state = .loggedIn s') :
+    s'.screen = .loading sel.ref ∧ sel.ref.version.isSome = true := by
+  simp [perform, onScreen, hsel] at h
+  obtain ⟨hallowed, rfl⟩ := h
+  simp [Session.to] at hs
+  subst s'
+  exact ⟨rfl, by cases hv : sel.ref.version <;> simp_all [Session.offersTileEdit]⟩
+
+/-- 版のあるクリックから読み込んだ地物を編集できるのは、ID と版が一致したときだけ。 -/
+theorem p16_edit_matches_tile {s s' : Session P F} {ref : Ref} {e actual : Edit}
+    {v : Nat} {st : Step P F} (hload : s.screen = .loading ref) (hv : ref.version = some v)
+    (h : receive (.loggedIn s) (.loaded e) = some st) (hs : st.state = .loggedIn s')
+    (hedit : s'.screen = .editing actual false false) :
+    actual.ref.id = ref.id ∧ actual.version = v := by
+  simp [receive, onReply, hload] at h
+  split at h <;> simp only [Option.some.injEq] at h <;> subst st
+  · rename_i hmatch
+    simp [Session.to] at hs
+    subst s'
+    simp at hedit
+    subst actual
+    have hm := hmatch
+    simp [Ref.matchesLoad, hv] at hm
+    exact ⟨hm.1.symm, hm.2.symm⟩
+  · let lagged := { s with screen := .loading ref, tiles := s.tiles + 1, mapLag := some (ref.id, e.version) }
+    change (lagged.searchTo (.view none)).state = .loggedIn s' at hs
+    have ⟨next, hstate, hscreen, _⟩ := searchTo_state lagged (.view none)
+    rw [hstate] at hs
+    simp at hs
+    subst s'
+    rw [hscreen] at hedit
+    contradiction
 
 end App

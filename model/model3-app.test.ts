@@ -138,7 +138,7 @@ test('モデル3(編集) 対照: 版を見ずに警告すると、もう読み�
 	const result = check(m3.init, m3.stepsWith(warnWithoutVersion, m3.editing), m3.honestWarning);
 	expect(result).toMatchObject({ ok: false });
 	expect(result.ok || result.trace.slice(-3)).toEqual([
-		'ほかの人が地物を更新する',
+		'編集を始める',
 		'地物を読み込めた(版1)',
 		'変更の知らせ(other、版1)が届く'
 	]);
