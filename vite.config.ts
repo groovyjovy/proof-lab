@@ -30,6 +30,17 @@ export default defineConfig({
 			{
 				extends: './vite.config.ts',
 				test: {
+					name: 'spec',
+					environment: 'node',
+					include: ['tests/conformance/**/*.test.ts'],
+					globalSetup: ['tests/conformance/global-setup.ts'],
+					testTimeout: 120_000,
+					hookTimeout: 600_000
+				}
+			},
+			{
+				extends: './vite.config.ts',
+				test: {
 					name: 'properties',
 					environment: 'node',
 					include: ['tests/properties/**/*.test.ts', 'tests/e2e/**/*.test.ts'],

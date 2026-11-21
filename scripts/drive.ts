@@ -127,7 +127,7 @@ if (!roles.includes(role) || !scenario)
 		`使い方: pnpm drive --role <${roles.join('|')}> --scenario <${Object.keys(scenarios).join('|')}> [--screenshot]`
 	);
 if (scenario.draws && !userOf(role).canEdit)
-	throw new Error(`${role} は描けない(描画ボタンが出ない)ので、${values.scenario} は流せない`);
+	throw new Error(`${role} は描けない(描画ボタンが押せない)ので、${values.scenario} は流せない`);
 
 const command = `pnpm drive --role ${role} --scenario ${values.scenario}${values.screenshot ? ' --screenshot' : ''}`;
 const out = join(

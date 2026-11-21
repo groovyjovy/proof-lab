@@ -1,6 +1,29 @@
 import fc from 'fast-check';
 import { expect, test } from 'vitest';
-import { init, next, saving, type Event, type State } from '#lib/app/machine.ts';
+import {
+	init,
+	offers,
+	perform,
+	receive,
+	saving,
+	type Op,
+	type Reply,
+	type State
+} from '#lib/app/machine.ts';
+
+type Event = Op | Reply;
+const replyTypes: Record<Reply['type'], true> = {
+	ログイン成功: true,
+	ログイン失敗: true,
+	ログアウト完了: true,
+	ログアウト失敗: true,
+	保存成功: true,
+	保存失敗: true,
+	保存結果不明: true
+};
+const isReply = (e: Event): e is Reply => e.type in replyTypes;
+const next = (s: State, e: Event) =>
+	(isReply(e) ? receive(s, e) : perform(offers(s), e))?.state ?? s;
 
 const point = fc.tuple(fc.double({ noNaN: true }), fc.double({ noNaN: true }));
 const key = fc.constantFrom('k1', 'k2', 'k3');
@@ -50,7 +73,7 @@ test('P6 UIの排他: どんな操作列でも、保存中に新しい描画は�
 		fc.property(events, (es) => {
 			let s = initial;
 			for (const e of es) {
-				const t = next(s, e).state;
+				const t = next(s, e);
 				const k = savingKey(s);
 				if (k !== null) {
 					savingVisits++;
@@ -69,10 +92,10 @@ test('L1 保存中は必ず終わる(状態機械の側): どの保存中の状�
 		fc.property(events, (es) => {
 			let s = initial;
 			for (const e of es) {
-				s = next(s, e).state;
+				s = next(s, e);
 				if (savingKey(s) === null) continue;
 				savingVisits++;
-				expect(savingKey(next(s, { type: '保存結果不明' }).state)).toBeNull();
+				expect(savingKey(next(s, { type: '保存結果不明' }))).toBeNull();
 			}
 		})
 	);

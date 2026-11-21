@@ -1,2 +1,6 @@
 export type City = 'A' | 'B';
-export type Me = { name: string; role: string | null; canEdit: boolean };
+export const roles = ['admin', 'a-staff', 'b-staff', 'viewer'] as const;
+export type Role = (typeof roles)[number];
+export type Me = { name: string; role: Role; canEdit: boolean };
+
+export const roleOf = (value: unknown): Role => roles.find((r) => r === value) ?? 'viewer';

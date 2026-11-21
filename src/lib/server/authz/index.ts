@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { PoolClient } from 'pg';
-import type { City, Me } from '#lib/domain.ts';
+import { roleOf, type City, type Me } from '#lib/domain.ts';
 import { pool } from '../db.ts';
 
 export type Bbox = [west: number, south: number, east: number, north: number];
@@ -77,11 +77,11 @@ export function scopedDb(actorId: string) {
 
 	return {
 		me: () =>
-			run(async (c) => {
-				const { rows } = await c.query<Me>(
+			run(async (c): Promise<Me> => {
+				const { rows } = await c.query(
 					`select name, role, coalesce("canEdit", false) as "canEdit" from "user" where id = app_user_id()`
 				);
-				return rows[0];
+				return { name: rows[0].name, role: roleOf(rows[0].role), canEdit: rows[0].canEdit };
 			}),
 
 		listFeatures: () =>

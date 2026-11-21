@@ -1,17 +1,17 @@
 import { authClient } from '#lib/auth-client.ts';
-import type { Me } from '#lib/domain.ts';
-import type { Draft, Effect, Event } from './machine.ts';
+import { roleOf, type Me } from '#lib/domain.ts';
+import type { Draft, Effect, Reply } from './machine.ts';
 
 export const saveTimeoutMs = 10_000;
 const demoPassword = 'password1234';
 
 const meOf = (user: object, email: string): Me => ({
 	name: 'name' in user && typeof user.name === 'string' ? user.name : email,
-	role: 'role' in user && typeof user.role === 'string' ? user.role : null,
+	role: roleOf('role' in user ? user.role : null),
 	canEdit: 'canEdit' in user && user.canEdit === true
 });
 
-async function logIn(email: string): Promise<Event> {
+async function logIn(email: string): Promise<Reply> {
 	try {
 		const { data, error } = await authClient.signIn.email({ email, password: demoPassword });
 		if (error) return { type: 'ログイン失敗', message: error.message ?? String(error.status) };
@@ -21,7 +21,7 @@ async function logIn(email: string): Promise<Event> {
 	}
 }
 
-async function logOut(): Promise<Event> {
+async function logOut(): Promise<Reply> {
 	try {
 		const { error } = await authClient.signOut();
 		return { type: error ? 'ログアウト失敗' : 'ログアウト完了' };
@@ -30,7 +30,7 @@ async function logOut(): Promise<Event> {
 	}
 }
 
-export async function save(d: Draft, timeoutMs = saveTimeoutMs): Promise<Event> {
+export async function save(d: Draft, timeoutMs = saveTimeoutMs): Promise<Reply> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
@@ -55,7 +55,7 @@ export async function save(d: Draft, timeoutMs = saveTimeoutMs): Promise<Event> 
 	}
 }
 
-export function run(effect: Effect): Promise<Event> {
+export function run(effect: Effect): Promise<Reply> {
 	switch (effect.type) {
 		case 'ログインする':
 			return logIn(effect.email);

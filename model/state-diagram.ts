@@ -1,20 +1,32 @@
 // 画面の状態図を、モデル3が全探索でたどった遷移から作る(手で描くと実装とずれる)。
-import { next, type Event } from '#lib/app/machine.ts';
+import { offers, receive, type Offers, type Op, type Step } from '#lib/app/machine.ts';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
 export function stateDiagram() {
 	const kinds = [m3.kindOf(m3.init.app)];
-	const edges = new Map<string, Set<Event['type']>>();
-	const recording: m3.Machine = (s, e) => {
-		const step = next(s, e);
-		const [from, to] = [m3.kindOf(s), m3.kindOf(step.state)];
-		if (from !== to) {
-			if (!kinds.includes(to)) kinds.push(to);
-			const edge = `${kinds.indexOf(from)}\t${kinds.indexOf(to)}`;
-			edges.set(edge, (edges.get(edge) ?? new Set()).add(e.type));
-		}
+	const edges = new Map<string, Set<string>>();
+	const record = (from: string, label: string, step: Step) => {
+		const to = m3.kindOf(step.state);
+		if (from === to) return step;
+		if (!kinds.includes(to)) kinds.push(to);
+		const edge = `${kinds.indexOf(from)}\t${kinds.indexOf(to)}`;
+		edges.set(edge, (edges.get(edge) ?? new Set()).add(label));
 		return step;
+	};
+	const recording: m3.Machine = {
+		offers: (s) =>
+			Object.fromEntries(
+				Object.entries(offers(s)).map(([type, transition]) => [
+					type,
+					transition &&
+						((op: Op) => record(m3.kindOf(s), type, (transition as (op: Op) => Step)(op)))
+				])
+			) as Offers,
+		receive: (s, r) => {
+			const step = receive(s, r);
+			return step && record(m3.kindOf(s), r.type, step);
+		}
 	};
 	check(m3.init, m3.stepsWith(recording), () => true);
 

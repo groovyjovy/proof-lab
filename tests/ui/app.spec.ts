@@ -19,7 +19,7 @@ const panel = extract((s) => {
 					text: b.textContent?.trim() ?? '',
 					disabled: b.matches(':disabled')
 				})),
-				citySelect: p.querySelector('select') !== null
+				citySelectEnabled: p.querySelector('select:enabled') !== null
 			}
 		: null;
 });
@@ -60,7 +60,8 @@ const map = extract((s) => {
 
 const saving = () => panel.current?.screen === '保存中' || panel.current?.screen === '再送中';
 const role = () => panel.current?.role ?? null;
-const has = (text: string) => panel.current?.buttons.some((b) => b.text.startsWith(text)) ?? false;
+const enabled = (text: string) =>
+	panel.current?.buttons.some((b) => b.text.startsWith(text) && !b.disabled) ?? false;
 
 const press = (text: string) =>
 	actions(() =>
@@ -128,10 +129,10 @@ export const ログアウト中は何も押せない = always(
 	() => panel.current?.app !== 'ログアウト中' || panel.current.buttons.every((b) => b.disabled)
 );
 
-export const 閲覧者は描けない = always(() => role() !== 'viewer' || !has('ポリゴンを描く'));
+export const 閲覧者は描けない = always(() => role() !== 'viewer' || !enabled('ポリゴンを描く'));
 
 export const 市を選べるのは管理者だけ = always(
-	() => role() === 'admin' || !panel.current?.citySelect
+	() => role() === 'admin' || !panel.current?.citySelectEnabled
 );
 
 const cityOfStaff: Record<string, string> = { 'a-staff': 'A', 'b-staff': 'B' };

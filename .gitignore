@@ -25,6 +25,9 @@ vite.config.ts.timestamp-*
 # 操作の記録(pnpm drive --screenshot)
 /evidence
 
+# Lean のビルド成果物
+/spec/.lake
+
 # TLA+
 tools/
 states/

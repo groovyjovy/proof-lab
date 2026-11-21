@@ -13,9 +13,11 @@
 		VectorTileSource
 	} from 'svelte-maplibre-gl';
 	import { page } from '$app/state';
-	import { run } from '#lib/app/effects.ts';
-	import { init, next, saving, type Event } from '#lib/app/machine.ts';
+	import { createApp } from '#lib/app/app.svelte.ts';
 	import type { City } from '#lib/domain.ts';
+	import ActionButton from '#lib/ui/ActionButton.svelte';
+	import ActionCheckbox from '#lib/ui/ActionCheckbox.svelte';
+	import ActionSelect from '#lib/ui/ActionSelect.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -64,13 +66,9 @@
 	];
 
 	// svelte-ignore state_referenced_locally
-	let app = $state.raw(init(data.me));
-
-	function send(e: Event) {
-		const step = next(app, e);
-		app = step.state;
-		for (const effect of step.effects) run(effect).then(send);
-	}
+	const machine = createApp(data.me);
+	const app = $derived(machine.state);
+	const actions = $derived(machine.actions);
 
 	const session = $derived(
 		app.kind === 'ログイン済み' ? app : app.kind === 'ログアウト中' ? app.from : null
@@ -103,8 +101,7 @@
 
 	function onMapClick(e: MapMouseEvent) {
 		const [hit] = e.target.queryRenderedFeatures(e.point, { layers: clickable });
-		send({
-			type: '地図をクリック',
+		actions.地図をクリック?.({
 			at: [e.lngLat.lng, e.lngLat.lat],
 			feature: hit?.properties ?? null
 		});
@@ -119,13 +116,13 @@
 		</p>
 		<div class="grid grid-cols-2 gap-2">
 			{#each demoUsers as u (u.email)}
-				<button
-					class="rounded border border-gray-300 px-3 py-2 hover:bg-gray-100 disabled:opacity-40"
-					disabled={app.kind === 'ログイン中'}
-					onclick={() => send({ type: 'ログインを押す', email: u.email })}
+				<ActionButton
+					class="rounded border border-gray-300 px-3 py-2 hover:bg-gray-100"
+					action={actions.ログインを押す}
+					payload={() => ({ email: u.email })}
 				>
 					{u.label}
-				</button>
+				</ActionButton>
 			{/each}
 		</div>
 		{#if app.kind === '未ログイン' && app.error}
@@ -177,7 +174,7 @@
 			<Popup
 				lnglat={screen.selected.at}
 				closeOnClick={false}
-				onclose={() => send({ type: 'ポップアップを閉じる' })}
+				onclose={() => actions.ポップアップを閉じる?.()}
 			>
 				<dl class="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
 					{#each Object.entries(screen.selected.properties) as [key, value] (key)}
@@ -190,95 +187,84 @@
 	</MapLibre>
 
 	<section
-		class="absolute top-3 left-3 z-10 w-72 rounded bg-white/95 p-3 text-sm shadow"
+		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
 		data-app={app.kind}
 		data-screen={session.screen.kind}
 		data-role={session.me.role}
 		data-draft-key={draft?.key}
 		data-draft-points={draft?.points.length}
 	>
-		<fieldset class="min-w-0 space-y-2 disabled:opacity-60" disabled={app.kind === 'ログアウト中'}>
-			<div class="flex items-center justify-between gap-2">
-				<span>
-					{session.me.name}({session.me.role}{session.me.canEdit ? '' : '・編集不可'})
-				</span>
-				<button
-					class="text-xs text-gray-500 underline disabled:no-underline disabled:opacity-40"
-					disabled={saving(session.screen)}
-					onclick={() => send({ type: 'ログアウトを押す' })}
+		<div class="flex items-center justify-between gap-2">
+			<span>
+				{session.me.name}({session.me.role}{session.me.canEdit ? '' : '・編集不可'})
+			</span>
+			<ActionButton
+				class="text-xs text-gray-500 underline disabled:no-underline"
+				action={actions.ログアウトを押す}
+			>
+				{app.kind === 'ログアウト中' ? 'ログアウト中…' : 'ログアウト'}
+			</ActionButton>
+		</div>
+		{#if session.screen.kind === '閲覧'}
+			<p class="text-gray-600">地物をクリックすると属性を表示します。</p>
+			<ActionButton
+				class="w-full rounded bg-green-600 px-3 py-1.5 text-white"
+				action={actions.描画開始}
+				payload={() => ({ key: crypto.randomUUID() })}
+			>
+				ポリゴンを描く
+			</ActionButton>
+		{:else if session.screen.kind === '描画中'}
+			{@const d = session.screen.draft}
+			<p>地図をクリックして点を追加({d.points.length} 点)</p>
+			<ActionSelect
+				action={actions.市を選ぶ}
+				payload={(value) => ({ city: value as City })}
+				value={d.city}
+				options={[
+					['A', 'A市'],
+					['B', 'B市']
+				]}
+			>
+				市
+			</ActionSelect>
+			<ActionCheckbox
+				action={actions.公開を選ぶ}
+				payload={(checked) => ({ public: checked })}
+				checked={d.public}
+			>
+				公開する
+			</ActionCheckbox>
+			<div class="flex gap-2">
+				<ActionButton
+					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+					action={actions.確定}
 				>
-					{app.kind === 'ログアウト中' ? 'ログアウト中…' : 'ログアウト'}
-				</button>
+					確定して保存
+				</ActionButton>
+				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>取消</ActionButton>
 			</div>
-			{#if session.screen.kind === '閲覧'}
-				<p class="text-gray-600">地物をクリックすると属性を表示します。</p>
-				{#if session.me.canEdit}
-					<button
-						class="w-full rounded bg-green-600 px-3 py-1.5 text-white"
-						onclick={() => send({ type: '描画開始', key: crypto.randomUUID() })}
-					>
-						ポリゴンを描く
-					</button>
-				{/if}
-			{:else if session.screen.kind === '描画中'}
-				{@const d = session.screen.draft}
-				<p>地図をクリックして点を追加({d.points.length} 点)</p>
-				{#if session.me.role === 'admin'}
-					<label class="flex items-center gap-2">
-						市
-						<select
-							class="rounded border px-1"
-							value={d.city}
-							onchange={(e) => send({ type: '市を選ぶ', city: e.currentTarget.value as City })}
-						>
-							<option value="A">A市</option>
-							<option value="B">B市</option>
-						</select>
-					</label>
-				{/if}
-				<label class="flex items-center gap-2">
-					<input
-						type="checkbox"
-						checked={d.public}
-						onchange={(e) => send({ type: '公開を選ぶ', public: e.currentTarget.checked })}
-					/>公開する
-				</label>
-				<div class="flex gap-2">
-					<button
-						class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white disabled:opacity-40"
-						disabled={d.points.length < 3}
-						onclick={() => send({ type: '確定' })}
-					>
-						確定して保存
-					</button>
-					<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
-						取消
-					</button>
-				</div>
-				{#if session.screen.notice === '保存失敗'}
-					<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
-				{/if}
-			{:else if session.screen.kind === '結果不明'}
-				<p class="text-red-600">
-					保存されたか分かりません(応答が届きませんでした)。再送しても地物が二重にできることはありません。
-				</p>
-				<div class="flex gap-2">
-					<button
-						class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
-						onclick={() => send({ type: '再送' })}
-					>
-						再送する
-					</button>
-					<button class="rounded border px-3 py-1.5" onclick={() => send({ type: '取消' })}>
-						やめる
-					</button>
-				</div>
-				{#if session.screen.notice === '再送失敗'}
-					<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
-				{/if}
-			{:else}
-				<p>{session.screen.kind}…</p>
+			{#if session.screen.notice === '保存失敗'}
+				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
 			{/if}
-		</fieldset>
+		{:else if session.screen.kind === '結果不明'}
+			<p class="text-red-600">
+				保存されたか分かりません(応答が届きませんでした)。再送しても地物が二重にできることはありません。
+			</p>
+			<div class="flex gap-2">
+				<ActionButton
+					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"
+					action={actions.再送}
+				>
+					再送する
+				</ActionButton>
+				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>やめる</ActionButton>
+			</div>
+			{#if session.screen.notice === '再送失敗'}
+				<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
+			{/if}
+		{:else}
+			<p>{session.screen.kind}…</p>
+		{/if}
 	</section>
 {/if}

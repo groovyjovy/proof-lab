@@ -1,15 +1,19 @@
-// モデル3: 実装の状態機械(src/lib/app/machine.ts の next)をそのまま、通信とサーバーの環境と一緒に検査する。
-// 書き直したモデルではないので、ここで出た反例は実装の反例。
+// モデル3: 実装の状態機械(src/lib/app/machine.ts の offers と receive)をそのまま、通信とサーバーの環境と一緒に検査する。
+// 書き直したモデルではないので、ここで出た反例は実装の反例。範囲を区切った全探索で、範囲なしの証明は spec/ にある。
 import type { Me } from '#lib/domain.ts';
 import {
-	next,
+	offers,
+	perform,
+	receive,
+	saving,
 	type Draft,
 	type Effect,
-	type Event,
 	type LoggedIn,
+	type Op,
 	type Point,
+	type Reply,
 	type State,
-	saving
+	type Step as AppStep
 } from '#lib/app/machine.ts';
 import type { Step } from './check.ts';
 
@@ -55,10 +59,10 @@ const savingKey = (app: State) => {
 	return v && saving(v) ? v.draft.key : null;
 };
 
-export type Machine = typeof next;
+export type Machine = { offers: typeof offers; receive: typeof receive };
+export const machine: Machine = { offers, receive };
 
-function apply(machine: Machine, w: World, e: Event, server: Partial<World> = {}): World {
-	const { state, effects } = machine(w.app, e);
+function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {}): World {
 	const broken = new Set(w.broken);
 	const sent = { ...w.sent };
 	const doubtful = server.doubtful ?? w.doubtful;
@@ -88,12 +92,12 @@ function apply(machine: Machine, w: World, e: Event, server: Partial<World> = {}
 	};
 }
 
-function userEvents(w: World): [string, Event][] {
+function sampleOps(w: World): [string, Op][] {
 	const v = session(w.app)?.screen;
 	const full = v !== undefined && v.kind !== '閲覧' && v.draft.points.length >= maxPoints;
 	return [
 		...(w.loginsUsed < maxLogins
-			? Object.keys(users).map((email): [string, Event] => [
+			? Object.keys(users).map((email): [string, Op] => [
 					`${users[email].name}でログインを押す`,
 					{ type: 'ログインを押す', email }
 				])
@@ -101,7 +105,7 @@ function userEvents(w: World): [string, Event][] {
 		['ログアウトを押す', { type: 'ログアウトを押す' }],
 		...(full
 			? []
-			: Object.entries(points).flatMap(([name, at]): [string, Event][] => [
+			: Object.entries(points).flatMap(([name, at]): [string, Op][] => [
 					[`地図の${name}をクリック`, { type: '地図をクリック', at, feature: null }],
 					[`${name}の地物をクリック`, { type: '地図をクリック', at, feature: { name } }]
 				])),
@@ -110,7 +114,7 @@ function userEvents(w: World): [string, Event][] {
 			? [
 					[`描画開始(k${w.keysUsed + 1})`, { type: '描画開始', key: `k${w.keysUsed + 1}` }] as [
 						string,
-						Event
+						Op
 					]
 				]
 			: []),
@@ -123,7 +127,7 @@ function userEvents(w: World): [string, Event][] {
 	];
 }
 
-function deliveries(f: Effect, w: World): [string, Event, Partial<World>][] {
+function deliveries(f: Effect, w: World): [string, Reply, Partial<World>][] {
 	switch (f.type) {
 		case 'ログインする':
 			return [
@@ -157,31 +161,49 @@ function deliveries(f: Effect, w: World): [string, Event, Partial<World>][] {
 	}
 }
 
+// 利用者は、画面に差し出された操作だけを行う(画面はそれ以外の操作を送れない)。
+// 環境は、飛んでいる副作用のどれかに、ありうる応答のどれかを返す。受け取れない応答は「応答を捨てた」として記録する。
 export const stepsWith =
-	(machine: Machine) =>
+	(m: Machine) =>
 	(w: World): Step<World>[] => {
 		const out: Step<World>[] = [];
-		for (const [label, e] of userEvents(w)) {
-			const t = apply(machine, w, e);
-			if (t.app === w.app) continue;
+		const offered = m.offers(w.app);
+		for (const [label, op] of sampleOps(w)) {
+			const step = perform(offered, op);
+			if (!step) continue;
 			out.push([
 				label,
 				{
-					...t,
-					keysUsed: w.keysUsed + (e.type === '描画開始' ? 1 : 0),
-					loginsUsed: w.loginsUsed + (e.type === 'ログインを押す' ? 1 : 0)
+					...apply(w, step),
+					keysUsed: w.keysUsed + (op.type === '描画開始' ? 1 : 0),
+					loginsUsed: w.loginsUsed + (op.type === 'ログインを押す' ? 1 : 0)
 				}
 			]);
 		}
 		w.inflight.forEach((f, i) => {
 			const inflight = w.inflight.filter((_, j) => j !== i);
-			for (const [label, e, server] of deliveries(f, w))
-				out.push([label, apply(machine, w, e, { ...server, inflight })]);
+			for (const [label, reply, server] of deliveries(f, w)) {
+				const step = m.receive(w.app, reply);
+				out.push([
+					label,
+					step
+						? apply(w, step, { ...server, inflight })
+						: {
+								...w,
+								...server,
+								inflight,
+								broken: [...new Set([...w.broken, '応答を捨てた'])].sort()
+							}
+				]);
+			}
 		});
 		return out;
 	};
 
-export const steps = stepsWith(next);
+export const steps = stepsWith(machine);
+
+// 応答を捨てない: 飛んでいる副作用への応答は、届いた状態で必ず受け取れる
+export const repliesAccepted = (w: World) => !w.broken.includes('応答を捨てた');
 
 // L1: 保存中(ログアウト中に隠れている場合も含む)なら、その保存の結果がまだ届いていない
 export const l1 = (w: World) => {
@@ -193,10 +215,8 @@ export const l1 = (w: World) => {
 export const singleFlight = (w: World) =>
 	w.inflight.filter((f) => f.type === '保存する').length <= 1;
 
-// P6: 保存中は、描画開始を押しても新しい描画が始まらない
-export const p6 = (w: World) =>
-	savingKey(w.app) === null ||
-	savingKey(next(w.app, { type: '描画開始', key: 'new' }).state) === savingKey(w.app);
+// P6: 保存中は、描画開始を差し出さない(だから新しい描画は始まらない)
+export const p6 = (w: World) => savingKey(w.app) === null || !offers(w.app).描画開始;
 
 // P10: 結果が分からなくなった保存は、同じキー・同じ中身でしか送り直さない(サーバーは同じキーを1つしか保存しないので、二重にならない)
 export const p10 = (w: World) => !w.broken.includes('P10');
@@ -209,8 +229,7 @@ export const drawPermission = (w: World) => {
 	const s = session(w.app);
 	if (!s || s.screen.kind === '閲覧') return true;
 	if (!s.me.canEdit) return false;
-	const home = { 'a-staff': 'A', 'b-staff': 'B' }[s.me.role ?? ''];
-	return home === undefined || s.screen.draft.city === home;
+	return s.me.role === 'admin' || s.screen.draft.city === (s.me.role === 'b-staff' ? 'B' : 'A');
 };
 
 export const kindOf = (app: State) => {

@@ -1,6 +1,6 @@
 # 機能マップ
 
-最終更新: 2026-11-20
+最終更新: 2026-11-21
 
 ユーザーから見た機能の一覧。人間とエージェントの共通語彙にする。
 ロールは goal.md 3.1、出口は 3.3、性質は 4章を参照。
@@ -37,6 +37,6 @@
 
 ## テストとの対応
 
-性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。本物の画面は `tests/ui/`(Bombadil)が、障害を起こすプロキシ越しにランダムに操作して確かめる。決まった手順を本物のブラウザで流す E2E は `tests/e2e/` にある(P3)。
+性質のうち P1〜P4・P6〜P8・P10 は `spec/` の Lean で証明してある(`docs/proofs.md`)。性質のテストは `tests/properties/` にある。画面の振る舞い(ログインから保存まで)は `src/lib/app/machine.ts` の状態機械にあり、`model/model3-app.test.ts` が全状態を検査する。本物の画面は `tests/ui/`(Bombadil)が、障害を起こすプロキシ越しにランダムに操作して確かめる。決まった手順を本物のブラウザで流す E2E は `tests/e2e/` にある(P3)。
 画面を動かしてスクリーンショットを撮る `pnpm drive` のシナリオは、この表の行に合わせてある(`docs/screens.md`)。出口は `tests/properties/harness.ts` の `exits` に並べる。
 出口を足したら `exits` にも足す。P1・P2・P5 のテストは `exits` の全部に対して回る。

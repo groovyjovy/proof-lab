@@ -8,5 +8,8 @@ bun.lockb
 # Miscellaneous
 /static/
 
+# Lean の依存の記録(lake が書く)
+spec/lake-manifest.json
+
 # 文書は手で整える。Prettier の Markdown 整形は表の桁揃えなどで goal.md の差分を大きくするため、対象から外している
 *.md

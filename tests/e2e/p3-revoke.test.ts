@@ -48,7 +48,7 @@ test('P3 剥奪後の書き込み禁止(ブラウザ): 描いている途中で�
 	await app.page.reload();
 	await app.reached('ログイン済み/閲覧');
 	expect(await app.header()).toContain('編集不可');
-	expect(await app.page.getByRole('button', { name: 'ポリゴンを描く' }).count()).toBe(0);
+	expect(await app.page.getByRole('button', { name: 'ポリゴンを描く' }).isDisabled()).toBe(true);
 	await app.page.close();
 	await admin.page.close();
 });

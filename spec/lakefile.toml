@@ -1,0 +1,13 @@
+name = "spec"
+defaultTargets = ["Spec", "oracle"]
+
+# sorry(証明の書きかけ)は警告になる。警告をエラーにして、書きかけの証明でビルドが通らないようにする
+[leanOptions]
+warningAsError = true
+
+[[lean_lib]]
+name = "Spec"
+
+[[lean_exe]]
+name = "oracle"
+root = "Main"
