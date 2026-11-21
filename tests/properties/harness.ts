@@ -227,11 +227,28 @@ export const statusAs = async (
 	user: User,
 	path: string,
 	as: string | null,
-	body?: unknown
+	body?: unknown,
+	method?: string
 ): Promise<number> => {
-	const res = await (await browserOf(user)).request(path, { as, body });
+	const res = await (await browserOf(user)).request(path, { as, body, method });
 	await res.arrayBuffer();
 	return res.status;
 };
+
+export const setCanEdit = (user: User, canEdit: boolean) =>
+	adminQuery('update "user" set "canEdit" = $2 where email = $1', [`${user}@example.com`, canEdit]);
+
+/** 管理者の接続(RLS を通らない)で地物を1つ入れ、その id を返す。 */
+export const insertFeature = async (city: City, isPublic: boolean): Promise<string> =>
+	String(
+		(
+			await adminQuery(
+				`insert into feature (city, public, name, owner_name, geom)
+				 values ($1, $2, '突き合わせ', '所有者', st_setsrid(st_makepoint($3, 43.05), 4326))
+				 returning id`,
+				[city, isPublic, city === 'A' ? 141.3 : 141.4]
+			)
+		).rows[0].id
+	);
 
 export { userIdOf };

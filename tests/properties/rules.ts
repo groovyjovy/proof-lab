@@ -19,12 +19,19 @@ const oracle = startOracle();
 const table = (await oracle.ask({ authzTable: true })) as Decision[];
 oracle.close();
 
-function decision(role: Role, city: City, isPublic: boolean) {
-	const canEdit = seedUsers.find((u) => u.user === role)?.canEdit;
+const seedCanEdit = (role: Role) => seedUsers.find((u) => u.user === role)?.canEdit ?? false;
+
+export function decision(
+	role: Role,
+	city: City,
+	isPublic: boolean,
+	canEdit: boolean = seedCanEdit(role)
+) {
 	const found = table.find(
 		(d) => d.role === role && d.canEdit === canEdit && d.city === city && d.public === isPublic
 	);
-	if (!found) throw new Error(`仕様の判断表に ${role}・${city}・公開 ${isPublic} がない`);
+	if (!found)
+		throw new Error(`仕様の判断表に ${role}・${city}・公開 ${isPublic}・編集 ${canEdit} がない`);
 	return found;
 }
 
