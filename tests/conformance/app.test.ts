@@ -1,22 +1,9 @@
 import fc from 'fast-check';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import { roles, type Me } from '#lib/domain.ts';
-import {
-	init,
-	notify,
-	offers,
-	perform,
-	receive,
-	type Effect,
-	type Notice,
-	type Op,
-	type Reply,
-	type State
-} from '#lib/app/machine.ts';
+import { init, type Op, type Reply, type State } from '#lib/app/machine.ts';
 import { startOracle, type Oracle } from '../../scripts/spec-oracle.ts';
-
-type Event = { op: Op } | { reply: Reply } | { notice: Notice };
-type Snapshot = { state: State; effects: Effect[]; offers: string[] };
+import { applyEvent, normalize, snapshot, type Event } from './implementation.ts';
 
 let oracle: Oracle;
 beforeAll(() => {
@@ -111,37 +98,16 @@ const events = fc
 	)
 	.map((chunks) => chunks.flat());
 
-const offered = (s: State) =>
-	Object.entries(offers(s))
-		.filter(([, transition]) => transition)
-		.map(([type]) => type)
-		.sort();
-
 function runImplementation(start: Me | null, es: Event[]) {
 	let s = init(start);
-	const snapshot = (state: State, effects: Effect[]): Snapshot => ({
-		state,
-		effects,
-		offers: offered(state)
-	});
 	const steps = es.map((e) => {
-		const step =
-			'op' in e
-				? perform(offers(s), e.op)
-				: 'reply' in e
-					? receive(s, e.reply)
-					: notify(s, e.notice);
+		const step = applyEvent(s, e);
 		if (!step) return null;
 		s = step.state;
 		return snapshot(step.state, step.effects);
 	});
-	return JSON.parse(JSON.stringify({ initial: snapshot(init(start), []), steps }));
+	return normalize({ initial: snapshot(init(start), []), steps });
 }
-
-const sortOffers = (trace: { initial: Snapshot; steps: (Snapshot | null)[] }) => ({
-	initial: { ...trace.initial, offers: [...trace.initial.offers].sort() },
-	steps: trace.steps.map((s) => s && { ...s, offers: [...s.offers].sort() })
-});
 
 const kindOf = (s: State) =>
 	s.kind === 'ログイン済み'
@@ -154,9 +120,7 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 	const visited = new Set<string>();
 	await fc.assert(
 		fc.asyncProperty(fc.option(me), events, async (start, es) => {
-			const expected = sortOffers(
-				(await oracle.ask({ me: start, events: es })) as Parameters<typeof sortOffers>[0]
-			);
+			const expected = normalize(await oracle.ask({ me: start, events: es }));
 			const actual = runImplementation(start, es);
 			expect(actual).toEqual(expected);
 			for (const s of actual.steps) if (s) visited.add(kindOf(s.state));

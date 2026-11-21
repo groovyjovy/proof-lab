@@ -50,6 +50,47 @@ def draftToJson (d : Draft Json) : Json :=
   Json.mkObj [("key", toJson d.key), ("city", toJson (cityName d.city)),
     ("public", toJson d.isPublic), ("points", Json.arr d.points.toArray)]
 
+def draftOf? (j : Json) : Except String (Draft Json) := do
+  return { key := ← j.getObjValAs? String "key"
+           city := ← cityOf? (← j.getObjValAs? String "city")
+           isPublic := ← j.getObjValAs? Bool "public"
+           points := (← (← j.getObjVal? "points").getArr?).toList }
+
+/-- 結果の知らせ(`notice`)は、決まった文字列か `null`。 -/
+def noticeFlag? (j : Json) (expected : String) : Except String Bool := do
+  let n ← j.getObjVal? "notice"
+  if n == .null then return false
+  if n == toJson expected then return true
+  throw s!"知らない知らせ: {n.compress}"
+
+def screenOf? (j : Json) : Except String (Screen Json Json) := do
+  match ← j.getObjValAs? String "kind" with
+  | "閲覧" =>
+    let sel ← j.getObjVal? "selected"
+    if sel == .null then return .view none
+    return .view (some ⟨← sel.getObjVal? "at", ← sel.getObjVal? "properties"⟩)
+  | "描画中" => return .drawing (← draftOf? (← j.getObjVal? "draft")) (← noticeFlag? j "保存失敗")
+  | "保存中" => return .saving (← draftOf? (← j.getObjVal? "draft"))
+  | "結果不明" => return .unknown (← draftOf? (← j.getObjVal? "draft")) (← noticeFlag? j "再送失敗")
+  | "再送中" => return .resaving (← draftOf? (← j.getObjVal? "draft"))
+  | k => throw s!"知らない画面: {k}"
+
+def sessionOf? (j : Json) : Except String (Session Json Json) := do
+  return { me := ← meOf? (← j.getObjVal? "me")
+           tiles := ← j.getObjValAs? Nat "tiles"
+           screen := ← screenOf? (← j.getObjVal? "screen") }
+
+def stateOf? (j : Json) : Except String S := do
+  match ← j.getObjValAs? String "kind" with
+  | "未ログイン" =>
+    let e ← j.getObjVal? "error"
+    if e == .null then return .loggedOut none
+    return .loggedOut (some (← e.getStr?))
+  | "ログイン中" => return .loggingIn (← j.getObjValAs? String "email")
+  | "ログイン済み" => return .loggedIn (← sessionOf? j)
+  | "ログアウト中" => return .loggingOut (← sessionOf? (← j.getObjVal? "from"))
+  | k => throw s!"知らない状態: {k}"
+
 def screenToJson : Screen Json Json → Json
   | .view sel =>
     Json.mkObj [("kind", "閲覧"),
@@ -135,6 +176,26 @@ def snapshot (s : S) (effects : List (Effect Json)) : Json :=
   Json.mkObj [("state", stateToJson s), ("effects", Json.arr (effects.map effectToJson).toArray),
     ("offers", toJson (offered s))]
 
+/-- 操作・応答・知らせを1つ当てる。差し出していない操作・受け取れない応答は `none`。 -/
+def applyEvent (s : S) (e : Json) : Except String (Option (Step Json Json)) :=
+  match e.getObjVal? "op", e.getObjVal? "reply", e.getObjVal? "notice" with
+  | .ok op, _, _ => return perform s (← opOf? op)
+  | _, .ok r, _ => return receive s (← replyOf? r)
+  | _, _, .ok n => return some (notify s (← noticeOf? n))
+  | _, _, _ => throw "op か reply か notice が要る"
+
+def stepToJson : Option (Step Json Json) → Json
+  | some st => snapshot st.state st.effects
+  | none => .null
+
+/-- 与えた状態に、イベントを1つずつ別々に当てた結果。範囲内の網羅に使う。 -/
+def branch (j : Json) : Except String Json := do
+  let s ← stateOf? (← j.getObjVal? "state")
+  let mut out : Array Json := #[]
+  for e in ← (← j.getObjVal? "branches").getArr? do
+    out := out.push (stepToJson (← applyEvent s e))
+  return Json.mkObj [("snapshot", snapshot s []), ("branches", Json.arr out)]
+
 /-- 画面の状態機械: 初期状態から操作・応答・知らせを順に流し、1つずつの結果を返す。
     差し出していない操作・受け取れない応答は `null` で、状態は変わらない。知らせは必ず受け取る。 -/
 def runTrace (j : Json) : Except String Json := do
@@ -144,12 +205,7 @@ def runTrace (j : Json) : Except String Json := do
   let mut s := initial
   let mut steps : Array Json := #[]
   for e in ← (← j.getObjVal? "events").getArr? do
-    let step? ← match e.getObjVal? "op", e.getObjVal? "reply", e.getObjVal? "notice" with
-      | .ok op, _, _ => pure (perform s (← opOf? op))
-      | _, .ok r, _ => pure (receive s (← replyOf? r))
-      | _, _, .ok n => pure (some (notify s (← noticeOf? n)))
-      | _, _, _ => throw "op か reply か notice が要る"
-    match step? with
+    match ← applyEvent s e with
     | some st =>
       s := st.state
       steps := steps.push (snapshot st.state st.effects)
@@ -175,6 +231,7 @@ def authzTable : Json := Id.run do
 def respond (line : String) : Except String Json := do
   let j ← Json.parse line
   if (j.getObjVal? "authzTable").toOption.isSome then return authzTable
+  if (j.getObjVal? "state").toOption.isSome then return ← branch j
   runTrace j
 
 partial def loop (stdin : IO.FS.Stream) (stdout : IO.FS.Stream) : IO Unit := do
