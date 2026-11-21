@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 目的と進め方は [goal.md](goal.md)、機能の一覧は [docs/feature-map.md](docs/feature-map.md)。
+機能を足す・直すときの手順は、スキル [research-flow](.claude/skills/research-flow/SKILL.md) にまとめた(事例研究の流れ、わざと壊した版、見つけたものの扱い、記録の一覧、報告の形)。
 
 ## 完了報告
 
