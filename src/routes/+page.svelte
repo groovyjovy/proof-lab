@@ -17,7 +17,6 @@
 		Popup,
 		VectorTileSource
 	} from 'svelte-maplibre-gl';
-	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { createApp } from '#lib/app/app.svelte.ts';
 	import type { City } from '#lib/domain.ts';
@@ -73,7 +72,6 @@
 
 	// svelte-ignore state_referenced_locally
 	const machine = createApp(data.me);
-	onMount(() => document.body.setAttribute('data-hydrated', ''));
 	const app = $derived(machine.state);
 	const actions = $derived(machine.actions);
 

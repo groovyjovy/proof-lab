@@ -34,10 +34,10 @@ const visibleTo = (role: Role) => (f: (typeof seedFeatures)[number]) =>
 	role === 'admin' ||
 	(role === 'viewer' ? f.public : f.city === { 'a-staff': 'A', 'b-staff': 'B' }[role]);
 
-/** サーバーが描いた HTML のボタンは、ハイドレーションが終わるまで反応しない。終わったら body に印が付く。 */
+/** ハイドレーションが終わるまで、画面は操作を差し出さない(ボタンは押せない)。押せるボタンが出るまで待つ。 */
 export async function open(page: Page) {
 	await page.goto('/');
-	await page.locator('body[data-hydrated]').waitFor({ state: 'attached' });
+	await page.locator('[data-app] button:enabled').first().waitFor();
 	return driver(page);
 }
 

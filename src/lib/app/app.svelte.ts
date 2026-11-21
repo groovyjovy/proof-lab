@@ -1,3 +1,4 @@
+import { onMount } from 'svelte';
 import type { Me } from '#lib/domain.ts';
 import { run } from './effects.ts';
 import {
@@ -19,6 +20,12 @@ export type Actions = {
 
 export function createApp(me: Me | null) {
 	let state = $state.raw(init(me));
+	// サーバーが描いた HTML では、ハイドレーションが終わるまで押しても何も起きない。
+	// その間は操作を差し出さない(ボタンは押せない)。onMount はブラウザで画面がつながってから走る。
+	let interactive = $state(false);
+	onMount(() => {
+		interactive = true;
+	});
 
 	function apply(step: Step) {
 		state = step.state;
@@ -30,7 +37,7 @@ export function createApp(me: Me | null) {
 			});
 	}
 
-	const actions = $derived(bind(offers(state), apply));
+	const actions = $derived(interactive ? bind(offers(state), apply) : {});
 
 	return {
 		get state() {

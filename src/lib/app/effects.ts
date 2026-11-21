@@ -5,18 +5,24 @@ import type { Draft, Effect, Reply } from './machine.ts';
 export const saveTimeoutMs = 10_000;
 const demoPassword = 'password1234';
 
-const meOf = (user: object, email: string): Me => ({
-	id: 'id' in user && typeof user.id === 'string' ? user.id : '',
-	name: 'name' in user && typeof user.name === 'string' ? user.name : email,
-	role: roleOf('role' in user ? user.role : null),
-	canEdit: 'canEdit' in user && user.canEdit === true
-});
+/** 本人の ID がなければ、要求に本人を書けない(P11)。そのときはログインできなかったことにする。 */
+const meOf = (user: object, email: string): Me | null =>
+	'id' in user && typeof user.id === 'string' && user.id !== ''
+		? {
+				id: user.id,
+				name: 'name' in user && typeof user.name === 'string' ? user.name : email,
+				role: roleOf('role' in user ? user.role : null),
+				canEdit: 'canEdit' in user && user.canEdit === true
+			}
+		: null;
 
 async function logIn(email: string): Promise<Reply> {
 	try {
 		const { data, error } = await authClient.signIn.email({ email, password: demoPassword });
 		if (error) return { type: 'ログイン失敗', message: error.message ?? String(error.status) };
-		return { type: 'ログイン成功', me: meOf(data.user, email) };
+		const me = meOf(data.user, email);
+		if (!me) return { type: 'ログイン失敗', message: 'サインインの応答に本人の ID がなかった' };
+		return { type: 'ログイン成功', me };
 	} catch {
 		return { type: 'ログイン失敗', message: '通信できませんでした' };
 	}

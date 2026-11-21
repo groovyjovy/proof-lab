@@ -32,12 +32,17 @@ test('ログインは1回の通信で終わる: サインインの応答から�
 	expect(fetch).not.toHaveBeenCalled();
 });
 
-test('サインインが通ったら、本人の情報が欠けていてもログイン成功にする(Cookie は付いているので)。分からないロールは閲覧者として扱う', async () => {
-	signIn.mockResolvedValue({ data: { user: { canEdit: null } }, error: null });
+test('サインインが通ったら、ID 以外の本人の情報が欠けていてもログイン成功にする(Cookie は付いているので)。分からないロールは閲覧者として扱う', async () => {
+	signIn.mockResolvedValue({ data: { user: { id: 'user-a', canEdit: null } }, error: null });
 	expect(await logIn()).toEqual({
 		type: 'ログイン成功',
-		me: { id: '', name: 'a-staff@example.com', role: 'viewer', canEdit: false }
+		me: { id: 'user-a', name: 'a-staff@example.com', role: 'viewer', canEdit: false }
 	});
+});
+
+test('P11 サインインの応答に本人の ID がなければ、要求に本人を書けないので、ログイン失敗にする', async () => {
+	signIn.mockResolvedValue({ data: { user: { name: 'A市職員' } }, error: null });
+	expect(await logIn()).toMatchObject({ type: 'ログイン失敗' });
 });
 
 test('サインインが拒否されたら、ログイン失敗', async () => {
