@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { run, save, search } from './effects.ts';
+import { run, save, search, subscribeChanges } from './effects.ts';
 
 const signIn = vi.hoisted(() => vi.fn());
 vi.mock('#lib/auth-client.ts', () => ({ authClient: { signIn: { email: signIn } } }));
@@ -166,4 +166,73 @@ test('L1 範囲の検索も、応答が来なければタイムアウトで「�
 		seq: 7,
 		result: { type: '検索できない' }
 	});
+});
+
+const sse = (...lines: string[]) =>
+	new Response(
+		new ReadableStream({
+			start(c) {
+				for (const line of lines) c.enqueue(new TextEncoder().encode(line));
+				c.close();
+			}
+		}),
+		{ status: 200, headers: { 'content-type': 'text/event-stream' } }
+	);
+
+const collect = (as: string) => {
+	const got: unknown[] = [];
+	const close = subscribeChanges(as, (n) => got.push(n));
+	return { got, close };
+};
+
+test('P14 変更の流れ: data 行を、流れを開いた本人(as)つきの「地物が変わった」にする。形の違う行は捨てる。途中で切れた行もつなげて読む', async () => {
+	const fetch = vi
+		.fn()
+		.mockResolvedValueOnce(
+			sse(
+				': つながった\n\n',
+				'data: {"id":5,"version":2,"key":"k1"}\n\n',
+				'data: {"id":"x"}\n\ndata: {"id":6,"ver',
+				'sion":1,"key":"k2"}\n\n'
+			)
+		);
+	fetch.mockImplementation(() => new Promise(() => {}));
+	vi.stubGlobal('fetch', fetch);
+	const { got, close } = collect('user-1');
+	await vi.waitFor(() => expect(got).toHaveLength(2));
+	close();
+	expect(got).toEqual([
+		{ type: '地物が変わった', change: { id: 5, version: 2, key: 'k1', as: 'user-1' } },
+		{ type: '地物が変わった', change: { id: 6, version: 1, key: 'k2', as: 'user-1' } }
+	]);
+	expect(fetch).toHaveBeenCalledWith('/api/events?as=user-1', expect.anything());
+});
+
+test('P14 変更の流れ: 切れたらつなぎ直し、つなぎ直せたら「つなぎ直した」を渡す(取りこぼしたかもしれないので)', async () => {
+	vi.useFakeTimers();
+	try {
+		const fetch = vi.fn().mockResolvedValueOnce(sse(': つながった\n\n'));
+		fetch.mockResolvedValueOnce(sse('data: {"id":5,"version":3,"key":"k3"}\n\n'));
+		fetch.mockImplementation(() => new Promise(() => {}));
+		vi.stubGlobal('fetch', fetch);
+		const { got, close } = collect('user-1');
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.waitFor(() => expect(got).toHaveLength(2));
+		close();
+		expect(got).toEqual([
+			{ type: '変更の流れをつなぎ直した', as: 'user-1' },
+			{ type: '地物が変わった', change: { id: 5, version: 3, key: 'k3', as: 'user-1' } }
+		]);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test('P11 変更の流れ: 本人違い(412)なら「地図の本人が変わった」を渡して終え、つなぎ直さない', async () => {
+	const fetch = vi.fn().mockResolvedValue(new Response('', { status: 412 }));
+	vi.stubGlobal('fetch', fetch);
+	const { got } = collect('user-1');
+	await vi.waitFor(() => expect(got).toEqual([{ type: '地図の本人が変わった' }]));
+	await new Promise((r) => setTimeout(r, 50));
+	expect(fetch).toHaveBeenCalledTimes(1);
 });

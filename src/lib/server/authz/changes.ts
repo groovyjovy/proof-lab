@@ -9,7 +9,8 @@ type Subscriber = { deliver: (c: FeatureChange) => void; lost: () => void };
 
 /**
  * PostgreSQL の知らせ(feature_changed)を、プロセスに1本の接続で受け、購読者に配る。
- * 開発サーバーの再読み込み(HMR)でも1本のままにするため、globalThis に置く。
+ * 開発サーバーの再読み込み(HMR)でも1本のままにするため、globalThis に置く(再読み込みのあとに
+ * 流れを3本開いても、LISTEN している接続は1本だった)。
  * 接続が切れたら、購読者に知らせて流れを閉じる(画面はつなぎ直し、取りこぼした分は読み直す)。
  */
 function createHub() {
@@ -69,8 +70,6 @@ export async function changesResponse(db: ReturnType<typeof scopedDb>) {
 	const stream = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			let queue = Promise.resolve();
-			// 最初の1行で応答を始める(画面は、ここで流れがつながったと分かる)
-			controller.enqueue(encoder.encode(': つながった\n\n'));
 			unsubscribe = await hub.subscribe({
 				deliver: (change) => {
 					queue = queue
@@ -82,6 +81,9 @@ export async function changesResponse(db: ReturnType<typeof scopedDb>) {
 				},
 				lost: () => queue.then(() => controller.close())
 			});
+			// 知らせを受け始めてから、最初の1行で応答を始める。先に返すと、その隙間に commit された変更を
+			// 取りこぼす(開発サーバーで、流れを開いた直後にはまだ LISTEN していないことを見て直した)
+			controller.enqueue(encoder.encode(': つながった\n\n'));
 		},
 		cancel: () => unsubscribe()
 	});
