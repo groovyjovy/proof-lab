@@ -118,13 +118,13 @@ def listingOf? (j : Json) : Except String (Listing Json Json) := do
 
 def searchToJson (s : Search Json Json) : Json :=
   Json.mkObj [("pending", nullable (s.pending.map queryToJson)),
-    ("shown", nullable (s.shown.map listingToJson))]
+    ("shown", nullable (s.shown.map listingToJson)), ("since", toJson s.since)]
 
 def searchOf? (j : Json) : Except String (Search Json Json) := do
   let p ← j.getObjVal? "pending"
   let l ← j.getObjVal? "shown"
   return ⟨← if p == .null then pure none else some <$> queryOf? p,
-    ← if l == .null then pure none else some <$> listingOf? l⟩
+    ← if l == .null then pure none else some <$> listingOf? l, ← j.getObjValAs? Nat "since"⟩
 
 def noticeFlag? (j : Json) (expected : String) : Except String Bool := do
   let n ← j.getObjVal? "notice"
@@ -153,6 +153,9 @@ def screenOf? (j : Json) : Except String (Screen Json Json) := do
   | "更新結果不明" =>
     return .updateUnknown (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
       (← noticeFlag? j "再送失敗")
+  | "更新の再送中" =>
+    return .reupdating (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
+      (← j.getObjValAs? Bool "applied")
   | "競合" => return .conflicted (← editOf? (← j.getObjVal? "edit"))
   | k => throw s!"知らない画面: {k}"
 
@@ -198,6 +201,9 @@ def screenToJson : Screen Json Json → Json
   | .updateUnknown e key failed =>
     Json.mkObj [("kind", "更新結果不明"), ("edit", editToJson e), ("key", toJson key),
       ("notice", if failed then "再送失敗" else .null)]
+  | .reupdating e key applied =>
+    Json.mkObj [("kind", "更新の再送中"), ("edit", editToJson e), ("key", toJson key),
+      ("applied", toJson applied)]
   | .conflicted e => Json.mkObj [("kind", "競合"), ("edit", editToJson e)]
 
 def sessionToJson (s : Session Json Json) : Json :=
@@ -294,6 +300,7 @@ def noticeOf? (j : Json) : Except String (Notice Json) := do
     return .changed { id := ← c.getObjValAs? Nat "id", version := ← c.getObjValAs? Nat "version",
                       key := ← c.getObjValAs? String "key", actor := ← c.getObjValAs? String "as" }
   | "変更の流れをつなぎ直した" => return .resumed (← j.getObjValAs? String "as")
+  | "権限が変わった" => return .permissionChanged (← meOf? (← j.getObjVal? "me"))
   | t => throw s!"知らない知らせ: {t}"
 
 /-- 差し出している操作の名前。差し出すかどうかは操作の中身によらない(`offer_depends_on_kind_only`)

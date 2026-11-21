@@ -21,7 +21,7 @@
 		"format": "prettier --write .",
 		"test": "vitest run",
 		"test:ui": "node --env-file=.env tests/ui/run.ts",
-		"explore": "node --env-file=.env scripts/explore.ts",
+		"explore": "node scripts/explore.ts",
 		"drive": "node --env-file=.env scripts/drive.ts",
 		"diagram": "node scripts/diagram.ts",
 		"setup:tlc": "mkdir -p tools && curl -fsSL -o tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",

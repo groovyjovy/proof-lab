@@ -82,6 +82,15 @@ const branches: Event[] = [
 		{ id: 1, version: 1, key: 'u2', as: 'u-a' }
 	].map((change): Event => ({ notice: { type: '地物が変わった', change } })),
 	...['u-admin', 'u-a'].map((as): Event => ({ notice: { type: '変更の流れをつなぎ直した', as } })),
+	...users.flatMap((me) =>
+		(
+			[
+				me,
+				{ ...me, role: me.role === 'b-staff' ? 'a-staff' : 'b-staff' },
+				{ ...me, canEdit: !me.canEdit }
+			] satisfies Me[]
+		).map((me): Event => ({ notice: { type: '権限が変わった', me } }))
+	),
 	...[0, 1, 2, 3, 4].flatMap((seq): Event[] => [
 		{ reply: { type: '検索の応答', seq, result: { type: '見つかった', hits: [hit] } } },
 		{ reply: { type: '検索の応答', seq, result: { type: '検索できない' } } },
@@ -89,9 +98,9 @@ const branches: Event[] = [
 	])
 ];
 
-test('範囲内の網羅: モデル3(作成・編集・検索)がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
+test('範囲内の網羅: モデル3の4範囲がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
 	const states = new Map<string, State>();
-	for (const steps of [m3.steps, m3.editSteps, m3.searchSteps])
+	for (const steps of [m3.steps, m3.editSteps, m3.searchSteps, m3.transferSearchSteps])
 		check(m3.init, steps, (w) => {
 			states.set(JSON.stringify(w.app), w.app);
 			return true;
@@ -110,7 +119,7 @@ test('範囲内の網羅: モデル3(作成・編集・検索)がたどる画面
 		expect(actual, JSON.stringify(state)).toEqual(normalize(answers[i]));
 	});
 	// 作成・編集の範囲と検索の範囲で重なる状態(ログイン前後の閲覧など)は1つに数える
-	expect(states.size).toBe(2075);
+	expect(states.size).toBe(7183);
 	// docs/proofs.md に書いた数が、今の数と同じか(状態機械を変えて書き直し忘れると落ちる)
 	const n = (x: number) => x.toLocaleString('en-US');
 	expect(readFileSync('docs/proofs.md', 'utf8')).toContain(

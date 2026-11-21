@@ -1,6 +1,6 @@
 // モデル3: 実装の状態機械(src/lib/app/machine.ts の offers と receive)をそのまま、通信とサーバーの環境と一緒に検査する。
 // 書き直したモデルではないので、ここで出た反例は実装の反例。範囲を区切った全探索で、範囲なしの証明は spec/ にある。
-import type { Me } from '#lib/domain.ts';
+import { canRead, canWrite, type Me } from '#lib/domain.ts';
 import {
 	identityChangedMessage,
 	notify,
@@ -44,6 +44,8 @@ export type World = {
 	serverUser: string | null;
 	movesUsed: number;
 	otherTabsUsed: number;
+	/** DB の本人の行のうち、異動で変わったもの(異動は1回まで)。サーバーは、答えるときの DB の権限で答える */
+	transferred: Me | null;
 	broken: string[];
 };
 
@@ -82,13 +84,32 @@ const maxMoves = 2;
 /** 検索の範囲で振る番号の上限(ログアウトに失敗するたびに検索し直すので、上限がないと状態が尽きない) */
 const maxSearches = 4;
 const maxOtherTabs = 1;
+/** 異動と検索の範囲で振る番号の上限(異動を入れると状態が増えるので、検索の範囲より絞る) */
+const maxSearchesWithTransfer = 3;
 const areaName = (a: Area) =>
 	Object.keys(areas).find((k) => JSON.stringify(areas[k]) === JSON.stringify(a)) ?? '?';
 const userById = (id: string) => Object.values(users).find((u) => u.id === id);
-/** 読める地物(認可の仕様の readCond を、管理者と閲覧者に絞ったもの)。 */
-const readable = (me: Me, h: Hit) => me.role === 'admin' || h.ref.public;
 const hitsFor = (me: Me, area: Area) =>
-	located.filter((f) => f.area === areaName(area) && readable(me, f.hit)).map((f) => f.hit);
+	located.filter((f) => f.area === areaName(area) && canRead(me, f.hit.ref)).map((f) => f.hit);
+
+/** DB の本人の行。異動したら、その行が変わる(P15)。 */
+const dbMe = (w: World, id: string): Me =>
+	w.transferred?.id === id ? w.transferred : (userById(id) as Me);
+/** 管理者が行う異動(本人ごとに1通り)。管理者は A市職員に(B市に描けず、B市の地物を読めなくなる)、
+    A市職員は B市に移り(A市の地物1を読めず、書けなくなる)、B市職員は編集権限を外され、
+    閲覧者は A市職員(編集できる)になる。 */
+const transferOf = (me: Me): Me =>
+	me.role === 'admin'
+		? { ...me, role: 'a-staff' }
+		: me.role === 'a-staff'
+			? { ...me, role: 'b-staff' }
+			: me.role === 'b-staff'
+				? { ...me, canEdit: false }
+				: { ...me, role: 'a-staff', canEdit: true };
+const same = (a: Me, b: Me) => JSON.stringify(a) === JSON.stringify(b);
+/** 本人あての権限の知らせが、届く途中にある */
+const permissionPending = (w: World, id: string) =>
+	w.changes.some((n) => n.type === '権限が変わった' && n.me.id === id);
 
 export const init: World = {
 	app: { kind: '未ログイン', error: null, map: { area: null, issued: 0 } },
@@ -107,6 +128,7 @@ export const init: World = {
 	serverUser: null,
 	movesUsed: 0,
 	otherTabsUsed: 0,
+	transferred: null,
 	broken: []
 };
 
@@ -163,7 +185,7 @@ function apply(
 		w.serverUser === was.me.id
 	)
 		broken.add('本人違いでないのに止めた');
-	if (before?.kind === '更新中') {
+	if (before?.kind === '更新中' || before?.kind === '更新の再送中') {
 		const applied = row.applied.includes(before.key);
 		if (after?.screen.kind === '競合' && applied) broken.add('競合の表示');
 		if (after?.screen.kind === '閲覧' && refreshed && !applied) broken.add('更新の成功の表示');
@@ -179,6 +201,32 @@ function apply(
 		!(row.version > after.screen.edit.version)
 	)
 		broken.add('警告の表示');
+	// P15: 保存・更新を送るのは、送るときの DB の権限で許されているときだけ(権限の知らせが届く途中か、
+	// 結果不明の送り直しを除く。送り直しは同じキーで、サーバーが判断する)
+	if (source === '操作')
+		for (const f of effects) {
+			if ((f.type !== '保存する' && f.type !== '更新する') || permissionPending(w, f.as)) continue;
+			const me = dbMe(w, f.as);
+			if (f.type === '保存する' && before?.kind !== '結果不明' && !canWrite(me, f.draft))
+				broken.add('P15');
+			if (f.type === '更新する' && before?.kind !== '更新結果不明' && !canWrite(me, f.edit.ref))
+				broken.add('P15');
+		}
+	// 失敗と表示したなら、その要求は効いていない(効いたかもしれないなら、結果不明と表示する)
+	if (
+		(before?.kind === '更新中' || before?.kind === '更新の再送中') &&
+		after?.screen.kind === '編集中' &&
+		after.screen.notice === '更新失敗' &&
+		row.applied.includes(before.key)
+	)
+		broken.add('更新の失敗の表示');
+	if (
+		before?.kind === '保存中' &&
+		after?.screen.kind === '描画中' &&
+		after.screen.notice === '保存失敗' &&
+		stored[before.draft.key] !== undefined
+	)
+		broken.add('保存の失敗の表示');
 	return {
 		...w,
 		...server,
@@ -199,6 +247,7 @@ function sampleOps(w: World, env: Environment): [string, Op][] {
 		case '編集':
 			return ops.filter(([, op]) => op.type !== '描画開始');
 		case '検索':
+		case '異動と検索':
 			return ops.filter(
 				([, op]) =>
 					op.type === 'ログアウトを押す' ||
@@ -256,17 +305,24 @@ function allOps(w: World): [string, Op][] {
 /** サーバーの更新(`saveFeature`)。キーを記録する(P12)。`idempotent` を外すと、キーを見ない素朴な更新になる。 */
 function updateOutcomes(
 	w: World,
-	edit: { version: number },
-	key: string,
+	f: Extract<Effect, { type: '更新する' }>,
 	idempotent: boolean
 ): [string, Reply, Partial<World>][] {
-	const failures: [string, Reply, Partial<World>][] = [
-		[`${key}をサーバーが拒否する`, { type: '保存失敗' }, {}],
+	const { edit, key } = f;
+	const lost: [string, Reply, Partial<World>][] = [
 		[`${key}の要求がサーバーに届かない`, { type: '保存結果不明' }, {}],
 		[`${key}の要求の本人がセッションと違う`, { type: '本人が変わった' }, {}]
 	];
+	const failures: [string, Reply, Partial<World>][] = [
+		[`${key}をサーバーが拒否する`, { type: '保存失敗' }, {}],
+		...lost
+	];
+	// 書き込めない人の更新は、同じキーがもう効いていても 403(RLS が、キーを見るより先に効く。
+	// tests/properties/p15-permission-change.test.ts で測った)
+	if (!canWrite(dbMe(w, f.as), edit.ref))
+		return [[`${key}を権限がないためサーバーが拒否する`, { type: '保存失敗' }, {}], ...lost];
 	if (idempotent && w.row.applied.includes(key))
-		return [[`${key}はもう効いている(成功が届く)`, { type: '保存成功' }, {}], ...failures];
+		return [[`${key}はもう効いている(成功が届く)`, { type: '保存成功' }, {}], ...lost];
 	if (edit.version !== w.row.version)
 		return [[`${key}は版が古く、競合が届く`, { type: '競合した' }, {}], ...failures];
 	const row = { version: w.row.version + 1, applied: [...w.row.applied, key] };
@@ -279,15 +335,24 @@ function updateOutcomes(
 
 function deliveries(f: Effect, w: World, env: Environment): [string, Reply, Partial<World>][] {
 	switch (f.type) {
-		case 'ログインする':
+		case 'ログインする': {
+			// サーバーは DB の本人で答える。異動の前に答えて、届くのが異動のあとのこともある
+			const before = users[f.email];
+			const now = dbMe(w, before.id);
 			return [
-				[
-					`${users[f.email].name}のログインが通る`,
-					{ type: 'ログイン成功', me: users[f.email] },
-					{}
-				],
+				[`${now.name}のログインが通る`, { type: 'ログイン成功', me: now }, {}],
+				...(same(before, now)
+					? []
+					: [
+							[
+								`${now.name}のログインが異動の前の権限で通る`,
+								{ type: 'ログイン成功', me: before },
+								{}
+							] as [string, Reply, Partial<World>]
+						]),
 				['ログインが失敗する', { type: 'ログイン失敗', message: '失敗' }, {}]
 			];
+		}
 		case 'ログアウトする':
 			return [
 				['ログアウトが通る', { type: 'ログアウト完了' }, {}],
@@ -297,6 +362,13 @@ function deliveries(f: Effect, w: World, env: Environment): [string, Reply, Part
 			const { key } = f.draft;
 			const stored = { ...w.stored, [key]: w.stored[key] ?? content(f.draft) };
 			const doubtful = [...new Set([...w.doubtful, key])].sort();
+			// 書き込めない人の作成は、同じキーがもう保存されていても 403(RLS の with check が先に効く。測った)
+			if (!canWrite(dbMe(w, f.as), f.draft))
+				return [
+					[`${key}を権限がないためサーバーが拒否する`, { type: '保存失敗' }, {}],
+					[`${key}の要求がサーバーに届かない`, { type: '保存結果不明' }, { doubtful }],
+					[`${key}の要求の本人がセッションと違う`, { type: '本人が変わった' }, {}]
+				];
 			return [
 				[`${key}をサーバーが保存し、成功が届く`, { type: '保存成功' }, { stored }],
 				[`${key}をサーバーが拒否する`, { type: '保存失敗' }, {}],
@@ -310,6 +382,11 @@ function deliveries(f: Effect, w: World, env: Environment): [string, Reply, Part
 			];
 		}
 		case '読み込む':
+			if (!canRead(dbMe(w, f.as), feature1.ref))
+				return [
+					['地物を読めない(権限がない)', { type: '読み込めない' }, {}],
+					['読み込みの本人がセッションと違う', { type: '本人が変わった' }, {}]
+				];
 			return [
 				[
 					`地物を読み込めた(版${w.row.version})`,
@@ -323,7 +400,7 @@ function deliveries(f: Effect, w: World, env: Environment): [string, Reply, Part
 				['読み込みの本人がセッションと違う', { type: '本人が変わった' }, {}]
 			];
 		case '更新する':
-			return updateOutcomes(w, f.edit, f.key, env.idempotentUpdates);
+			return updateOutcomes(w, f, env.idempotentUpdates);
 		case '検索する':
 			return [];
 	}
@@ -341,7 +418,7 @@ function searchAnswers(f: Extract<Effect, { type: '検索する' }>, w: World): 
 	if (w.serverUser === null) return [failed];
 	if (w.serverUser !== f.as)
 		return [[`${n}の本人がセッションと違う`, reply({ type: '本人が変わった' })], failed];
-	const me = userById(f.as)!;
+	const me = dbMe(w, f.as);
 	return [
 		[`${n}にサーバーが答える`, reply({ type: '見つかった', hits: hitsFor(me, f.query.area) })],
 		failed
@@ -356,11 +433,41 @@ const replyLabel = (r: Reply) =>
  * (1つの世界に入れると、サーバーの状態が掛け算で増えて、メモリに収まらない)。
  * 既定のサーバーは実装のとおり(更新はキーで冪等)。
  */
-export type Environment = { scope: '作成' | '編集' | '検索'; idempotentUpdates: boolean };
-export const creating: Environment = { scope: '作成', idempotentUpdates: true };
-export const editing: Environment = { scope: '編集', idempotentUpdates: true };
-/** 範囲の検索: 地図を動かし、検索の応答が送った順と違う順に届く。ログインし直す前の本人の応答も届く。 */
-export const searching: Environment = { scope: '検索', idempotentUpdates: true };
+export type Environment = {
+	scope: '作成' | '編集' | '検索' | '異動と検索';
+	idempotentUpdates: boolean;
+	/** 管理者が、ログインしている本人を異動する(P15。1回まで) */
+	transfers: boolean;
+	/** 変更の流れをつなぐたびに、サーバーが DB の本人を送る(P15) */
+	meOnConnect: boolean;
+};
+export const creating: Environment = {
+	scope: '作成',
+	idempotentUpdates: true,
+	transfers: true,
+	meOnConnect: true
+};
+export const editing: Environment = {
+	scope: '編集',
+	idempotentUpdates: true,
+	transfers: true,
+	meOnConnect: true
+};
+/** 範囲の検索: 地図を動かし、検索の応答が送った順と違う順に届く。ログインし直す前の本人の応答も届く。
+    異動は入れない(入れるとメモリに収まらないので、異動と検索の範囲で見る)。 */
+export const searching: Environment = {
+	scope: '検索',
+	idempotentUpdates: true,
+	transfers: false,
+	meOnConnect: true
+};
+/** 異動と検索: 検索の範囲に異動を入れる。ほかのタブでのログインし直しは入れず、検索の番号の上限を下げる。 */
+export const transferringSearch: Environment = {
+	scope: '異動と検索',
+	idempotentUpdates: true,
+	transfers: true,
+	meOnConnect: true
+};
 
 // 利用者は、画面に差し出された操作だけを行う(画面はそれ以外の操作を送れない)。
 // 環境は、飛んでいる副作用のどれかに、ありうる応答のどれかを返す。受け取れない応答は「応答を捨てた」として記録する。
@@ -369,7 +476,7 @@ export const searching: Environment = { scope: '検索', idempotentUpdates: true
 export const stepsWith =
 	(m: Machine, env: Environment = creating) =>
 	(w: World): Step<World>[] => {
-		const tracked = env.scope === '検索';
+		const tracked = env.scope === '検索' || env.scope === '異動と検索';
 		const out: Step<World>[] = [];
 		const offered = m.offers(w.app);
 		for (const [label, op] of sampleOps(w, env)) {
@@ -400,7 +507,7 @@ export const stepsWith =
 						movesUsed: w.movesUsed + 1
 					}
 				]);
-		if (tracked && w.serverUser !== null && w.otherTabsUsed < maxOtherTabs)
+		if (env.scope === '検索' && w.serverUser !== null && w.otherTabsUsed < maxOtherTabs)
 			out.push([
 				'ほかのタブで別の人がログインし直す',
 				{
@@ -409,6 +516,24 @@ export const stepsWith =
 					otherTabsUsed: w.otherTabsUsed + 1
 				}
 			]);
+		// 管理者が、ログインしている(またはログインしようとしている)本人を異動する。変更の流れがその本人として
+		// 開いていれば、サーバーは権限の知らせを出す(届くのはもっとあと)
+		const target =
+			session(w.app)?.me ?? (w.app.kind === 'ログイン中' ? users[w.app.email] : undefined);
+		if (env.transfers && target && w.transferred === null) {
+			const moved = transferOf(target);
+			out.push([
+				`管理者が${target.name}を異動する`,
+				{
+					...w,
+					transferred: moved,
+					changes:
+						session(w.app)?.me.id === target.id
+							? enqueue(w.changes, { type: '権限が変わった', me: moved })
+							: w.changes
+				}
+			]);
+		}
 		if (env.scope === '編集' && w.othersUsed < maxOthers)
 			out.push([
 				'ほかの人が地物を更新する',
@@ -420,19 +545,24 @@ export const stepsWith =
 				}
 			]);
 		const streaming = session(w.app)?.me.id;
-		if (env.scope === '編集' && streaming && w.resumesUsed < maxResumes)
+		if (env.scope === '編集' && streaming && w.resumesUsed < maxResumes) {
+			const resumed = m.notify(w.app, { type: '変更の流れをつなぎ直した', as: streaming });
 			out.push([
 				'変更の流れをつなぎ直す',
 				{
-					...apply(
-						w,
-						m.notify(w.app, { type: '変更の流れをつなぎ直した', as: streaming }),
-						{},
-						'知らせ'
-					),
+					...apply(w, resumed, { changes: connected(w, w.changes, w.app, env) }, '知らせ'),
 					resumesUsed: w.resumesUsed + 1
 				}
 			]);
+			// 切れていた間の知らせ(届く途中のものも)は、新しい流れには来ない
+			out.push([
+				'変更の流れが切れ、届く途中の知らせを落としてつなぎ直す',
+				{
+					...apply(w, resumed, { changes: connected(w, [], w.app, env) }, '知らせ'),
+					resumesUsed: w.resumesUsed + 1
+				}
+			]);
+		}
 		w.changes.forEach((n, i) => {
 			const changes = w.changes.filter((_, j) => j !== i);
 			out.push([changeLabel(n), apply(w, m.notify(w.app, n), { changes }, '知らせ')]);
@@ -455,10 +585,15 @@ export const stepsWith =
 					? { ...rawServer, serverUser: serverUserAfter(w, reply) }
 					: { ...rawServer, ...notified };
 				const step = m.receive(w.app, reply);
+				// ログインできたら、変更の流れをその本人としてつなぐ
+				const opened =
+					step && reply.type === 'ログイン成功'
+						? { changes: connected(w, server.changes ?? w.changes, step.state, env) }
+						: {};
 				out.push([
 					label,
 					step
-						? apply(w, step, { ...server, inflight })
+						? apply(w, step, { ...server, ...opened, inflight })
 						: {
 								...w,
 								...server,
@@ -478,28 +613,43 @@ export const stepsWith =
 					: { ...w, answered, broken: [...new Set([...w.broken, '応答を捨てた'])].sort() }
 			]);
 		});
-		return tracked ? out.filter(([, next]) => mapOf(next.app).issued <= maxSearches) : out;
+		const limit = env.scope === '検索' ? maxSearches : maxSearchesWithTransfer;
+		return tracked ? out.filter(([, next]) => mapOf(next.app).issued <= limit) : out;
 	};
 
 const mapOf = (app: State) => (app.kind === 'ログアウト中' ? app.from.map : app.map);
 
 const maxResumes = 1;
 
+/** 届く途中の知らせに足す。届く順番は決まっていないので、並べ替えておく(同じ状態を2度数えない)。 */
+const enqueue = (changes: Notice[], n: Notice) =>
+	[...changes, n]
+		.map((c) => JSON.stringify(c))
+		.sort()
+		.map((c) => JSON.parse(c) as Notice);
+
 /** サーバーが変更を知らせる。変更の流れは、ログインしている本人として開いている(いなければ届かない)。 */
 function emitChange(w: World, key: string, version: number): Notice[] {
 	const me = session(w.app)?.me.id;
 	if (!me) return w.changes;
-	const n: Notice = { type: '地物が変わった', change: { id: 1, version, key, as: me } };
-	return [...w.changes, n]
-		.map((c) => JSON.stringify(c))
-		.sort()
-		.map((c) => JSON.parse(c) as Notice);
+	return enqueue(w.changes, { type: '地物が変わった', change: { id: 1, version, key, as: me } });
+}
+
+/** 変更の流れを(つなぎ直して)開いた。`meOnConnect` なら、サーバーは最初に DB の本人を送る。
+    画面の本人と同じなら知らせても何も変わらないので、違うときだけ足す。 */
+function connected(w: World, changes: Notice[], app: State, env: Environment): Notice[] {
+	const s = session(app);
+	if (!env.meOnConnect || !s) return changes;
+	const now = dbMe(w, s.me.id);
+	return same(now, s.me) ? changes : enqueue(changes, { type: '権限が変わった', me: now });
 }
 
 const changeLabel = (n: Notice) =>
 	n.type === '地物が変わった'
 		? `変更の知らせ(${n.change.key}、版${n.change.version})が届く`
-		: n.type;
+		: n.type === '権限が変わった'
+			? `権限の知らせ(${n.me.name}、${n.me.role}${n.me.canEdit ? '' : '、編集不可'})が届く`
+			: n.type;
 
 /** 届く順番は決まっていないので、届く途中の応答は並べ替えておく(同じ状態を2度数えない)。 */
 const canonical = (replies: Reply[]) =>
@@ -515,6 +665,7 @@ const serverUserAfter = (w: World, r: Reply) =>
 export const steps = stepsWith(machine);
 export const editSteps = stepsWith(machine, editing);
 export const searchSteps = stepsWith(machine, searching);
+export const transferSearchSteps = stepsWith(machine, transferringSearch);
 
 // 応答を捨てない: 飛んでいる副作用への応答は、届いた状態で必ず受け取れる
 export const repliesAccepted = (w: World) => !w.broken.includes('応答を捨てた');
@@ -538,13 +689,34 @@ export const p10 = (w: World) => !w.broken.includes('P10');
 // 保存できたと表示したら、表示していた図形がそのままサーバーにある
 export const honestSuccess = (w: World) => !w.broken.includes('成功の表示');
 
-// 編集できない人は描けない。市職員は自分の市にしか描けない
-export const drawPermission = (w: World) => {
+// P15(2026-11-22 に「編集できない人は描けない。市職員は自分の市にしか描けない」から言い直した。
+// 描いている間に権限が変わりうるので、下書きではなく送るときの権限で見る):
+// 保存・更新を送るのは、送るときの DB の権限で許されているときだけ(権限の知らせが届く途中か、結果不明の送り直しを除く)
+export const p15Sent = (w: World) => !w.broken.includes('P15');
+
+// P15 橋: 本人あての権限の知らせが届く途中でなければ、画面の本人は DB の本人と同じ。
+// Lean の P15 の定理は画面の本人について述べる。DB の本人とつなぐのが、この性質(証明の外)
+export const p15Current = (w: World) => {
 	const s = session(w.app);
-	if (!s || !('draft' in s.screen)) return true;
-	if (!s.me.canEdit) return false;
-	return s.me.role === 'admin' || s.screen.draft.city === (s.me.role === 'b-staff' ? 'B' : 'A');
+	return !s || permissionPending(w, s.me.id) || same(s.me, dbMe(w, s.me.id));
 };
+
+// P15: 権限の知らせが届く途中でなければ、選んでいる地物と一覧の地物は、DB の権限で読めるもの
+export const p15Readable = (w: World) => {
+	const s = session(w.app);
+	if (!s || permissionPending(w, s.me.id)) return true;
+	const me = dbMe(w, s.me.id);
+	const selected = s.screen.kind === '閲覧' ? s.screen.selected : null;
+	const l = s.search.shown;
+	return (
+		(!selected || canRead(me, selected.ref)) &&
+		(l?.kind !== '見つかった' || l.hits.every((h) => canRead(me, h.ref)))
+	);
+};
+
+// 失敗の表示が正直: 失敗と表示したとき、その要求はサーバーで効いていない
+export const honestFailure = (w: World) =>
+	!w.broken.includes('更新の失敗の表示') && !w.broken.includes('保存の失敗の表示');
 
 // P12: 結果が分からなくなった更新は、同じキー・同じ中身でしか送り直さない
 export const p12 = (w: World) => !w.broken.includes('P12');
@@ -564,11 +736,15 @@ export const honestWarning = (w: World) => !w.broken.includes('警告の表示')
 // 更新の成功の表示が正直: 成功と表示したとき(応答でも、変更の知らせでも)、その更新はサーバーで効いている
 export const honestUpdate = (w: World) => !w.broken.includes('更新の成功の表示');
 
-// P13: 一覧に出している地物は、今の本人が読めるものだけ(前の本人への検索の応答を出さない)
+// P13: 一覧に出している地物は、今の本人が読めるものだけ(前の本人への検索の応答を出さない)。
+// 2026-11-22 言い直し: 権限は変わりうるので、「今の本人」は画面の本人か DB の本人のどちらか
+// (知らせが届くまでの間は、どちらの権限での応答も届く。届いたあとは P15 で DB の本人に絞る)
 export const p13Readable = (w: World) => {
 	const s = session(w.app);
 	const l = s?.search.shown;
-	return !s || l?.kind !== '見つかった' || l.hits.every((h) => readable(s.me, h));
+	if (!s || l?.kind !== '見つかった') return true;
+	const now = dbMe(w, s.me.id);
+	return l.hits.every((h) => canRead(s.me, h.ref) || canRead(now, h.ref));
 };
 
 // P13: 一覧の地物は、一覧が示す範囲のもの(追い越された検索の応答を、新しい範囲の一覧として出さない)
@@ -606,3 +782,36 @@ export const kindOf = (app: State) => {
 	const s = session(app);
 	return s ? `${app.kind}/${s.screen.kind}` : app.kind;
 };
+
+/** P15 の性質が空振りしていないことを確かめるための、探索が届いた場面。 */
+export function p15Scenes(w: World): string[] {
+	const seen: string[] = [];
+	const s = session(w.app);
+	if (w.transferred) seen.push('異動した');
+	if (!s) return seen;
+	const pending = permissionPending(w, s.me.id);
+	const now = dbMe(w, s.me.id);
+	const v = s.screen;
+	if (!same(s.me, now)) seen.push('画面の権限が DB と違う(知らせが届く途中)');
+	if (pending && busy(v)) seen.push('応答待ちの間に権限の知らせが届く途中');
+	if (pending && w.app.kind === 'ログアウト中') seen.push('ログアウト中に権限の知らせが届く途中');
+	if (pending && v.kind === '閲覧' && v.selected && !canRead(now, v.selected.ref))
+		seen.push('選んでいる地物を読めなくなる知らせが届く途中');
+	if (pending && s.search.shown) seen.push('一覧を出している間に権限の知らせが届く途中');
+	if (
+		w.answered.some(
+			(r) =>
+				r.type === '検索の応答' &&
+				r.result.type === '見つかった' &&
+				r.result.hits.some((h) => !canRead(now, h.ref))
+		)
+	)
+		seen.push('異動の前の権限で答えた検索の応答が届く途中');
+	if (v.kind === '描画中' && v.draft.points.length >= 3 && !canWrite(s.me, v.draft))
+		seen.push('権限が変わって、描いている下書きを保存できない');
+	if (v.kind === '編集中' && !canWrite(s.me, v.edit.ref))
+		seen.push('権限が変わって、編集している地物を保存できない');
+	if (v.kind === '更新結果不明' && v.notice === '再送失敗' && w.row.applied.includes(v.key))
+		seen.push('効いた更新の送り直しが、権限がないため拒否されて結果不明');
+	return seen;
+}

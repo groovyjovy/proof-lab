@@ -76,6 +76,7 @@ export function scopedDb(actorId: string) {
 	};
 
 	return {
+		actorId,
 		me: () =>
 			run(async (c): Promise<Me> => {
 				const { rows } = await c.query(

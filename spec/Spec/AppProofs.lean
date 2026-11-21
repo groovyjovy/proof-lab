@@ -82,7 +82,8 @@ def Screen.draft? : Screen P F → Option (Draft P)
 
 /-- 編集中の値(読み込んだあと)。 -/
 def Screen.edit? : Screen P F → Option Edit
-  | .editing e _ _ | .updating e _ _ | .updateUnknown e _ _ | .conflicted e => some e
+  | .editing e _ _ | .updating e _ _ | .updateUnknown e _ _ | .reupdating e _ _ | .conflicted e =>
+    some e
   | _ => none
 
 /-- 結果が分からない(サーバーに保存されたかもしれない)下書き。 -/
@@ -95,7 +96,7 @@ def Session.inflight (s : Session P F) : List (Effect P) :=
   match s.screen with
   | .saving d | .resaving d => [.save d s.me.id]
   | .loading ref => [.load ref.id s.me.id]
-  | .updating e key _ => [.update e key s.me.id]
+  | .updating e key _ | .reupdating e key _ => [.update e key s.me.id]
   | _ => []
 
 def State.session? : State P F → Option (Session P F)
@@ -107,9 +108,16 @@ def State.isBusy (s : State P F) : Bool :=
   | .loggedIn s => s.screen.isBusy
   | _ => false
 
-/-- 描画の権限: 下書きがあるのは編集できる人だけ。管理者以外は自分の市にしか描かない。 -/
-def DraftOk (s : Session P F) : Prop :=
-  ∀ d, s.screen.draft? = some d → s.me.canEdit = true ∧ (s.me.role ≠ .admin → d.city = s.me.home)
+/-- ポップアップの地物は、今の本人が読める(P15)。
+    (事例研究3までは「下書きがあるのは、編集できる人だけ」(`SelectedOk`)を不変条件にしていた。ログインの途中で
+    権限が変わると、描いていた下書きは残るので成り立たない。送るときの権限で決める定理に言い直した) -/
+def SelectedOk (s : Session P F) : Prop :=
+  ∀ sel, s.screen = .view (some sel) → canReadFeature s.me sel.ref = true
+
+/-- 一覧と待っている検索は、今の権限で振った番号(`since` から)のもの(P15)。 -/
+def SinceOk (s : Session P F) : Prop :=
+  s.search.since ≤ s.map.issued ∧ (∀ q, s.search.pending = some q → s.search.since ≤ q.seq) ∧
+    (∀ l, s.search.shown = some l → s.search.since ≤ l.query.seq)
 
 /-! ## 飛んでいる副作用の2つの列
 
@@ -148,20 +156,25 @@ def FrozenOk (ok : String → List (Ref × F) → Prop) (s : Session P F) : Prop
   (s.map.area = none → s.search.pending = none ∧ s.search.shown = none) ∧
   (∀ q hits, s.search.shown = some (.found q hits) → ok s.me.id hits)
 
+/-- 更新を送って(送り直して)いる間に、効いたという知らせを受けたキー。 -/
+@[simp] def Screen.appliedKey? : Screen P F → Option String
+  | .updating _ k true | .reupdating _ k true => some k
+  | _ => none
+
 /-- 効いたと覚えている更新のキーは、本当に効いている。 -/
 def UpdatingOk (server : Server F) (s : Session P F) : Prop :=
-  ∀ e k, s.screen = .updating e k true → server.applied k
+  ∀ k, s.screen.appliedKey? = some k → server.applied k
 
 /-- 到達できる状態で成り立つ不変条件。検索のほかの飛んでいる副作用は、画面の状態だけで決まる。 -/
 def Inv (server : Server F) : Sys P F → Prop
   | ⟨.loggedOut _ m, fl⟩ => lane fl = [] ∧ SearchesOk m.issued fl
   | ⟨.loggingIn email m, fl⟩ => lane fl = [.login email] ∧ SearchesOk m.issued fl
   | ⟨.loggedIn s, fl⟩ =>
-    lane fl = s.inflight ∧ SearchesOk s.map.issued fl ∧ DraftOk s ∧ ListingOk server.ok s fl ∧
-      UpdatingOk server s
+    lane fl = s.inflight ∧ SearchesOk s.map.issued fl ∧ SelectedOk s ∧ ListingOk server.ok s fl ∧
+      UpdatingOk server s ∧ SinceOk s
   | ⟨.loggingOut s, fl⟩ =>
-    lane fl = [.logout] ∧ SearchesOk s.map.issued fl ∧ s.screen.isBusy = false ∧ DraftOk s ∧
-      FrozenOk server.ok s
+    lane fl = [.logout] ∧ SearchesOk s.map.issued fl ∧ s.screen.isBusy = false ∧ SelectedOk s ∧
+      FrozenOk server.ok s ∧ SinceOk s
 
 /-! ## 列についての補題 -/
 
@@ -309,9 +322,9 @@ theorem ListingOk.frozen {s : Session P F} {fl : List (Effect P)} (h : ListingOk
 
 theorem updatingOk_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) :
     UpdatingOk server s := by
-  intro e k hk
-  rw [hk] at h
-  simp [Screen.isBusy] at h
+  intro k hk
+  obtain ⟨me, tiles, screen, map, search⟩ := s
+  cases screen <;> simp_all [Screen.appliedKey?, Screen.isBusy]
 
 theorem inflight_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) : s.inflight = [] := by
   obtain ⟨me, tiles, screen, map, search⟩ := s
@@ -320,26 +333,29 @@ theorem inflight_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) : s
 /-! ## 不変条件 -/
 
 theorem inv_init (me : Option Me) : Inv server (⟨init me, []⟩ : Sys P F) := by
-  cases me <;> simp [init, Inv, Session.fresh, Session.inflight, DraftOk, Screen.draft?,
+  cases me <;> simp [init, Inv, Session.fresh, Session.inflight, SelectedOk, SinceOk, Screen.draft?,
     SearchesOk, ListingOk, UpdatingOk]
 
 /-- 範囲を検索して画面 `screen` に移る遷移は、不変条件を保つ。 -/
 theorem inv_searchTo {s : Session P F} {screen : Screen P F} {fl : List (Effect P)}
     (hlane : lane fl = ({ s with screen } : Session P F).inflight)
     (hsearch : SearchesOk s.map.issued fl)
-    (hok : DraftOk ({ s with screen } : Session P F))
-    (hfrozen : FrozenOk server.ok s) (hupd : UpdatingOk server ({ s with screen } : Session P F)) :
+    (hok : SelectedOk ({ s with screen } : Session P F))
+    (hfrozen : FrozenOk server.ok s) (hupd : UpdatingOk server ({ s with screen } : Session P F))
+    (hsince : SinceOk s) :
     Inv server ⟨(s.searchTo screen).state, fl ++ (s.searchTo screen).effects⟩ := by
-  obtain ⟨me, tiles, screen₀, ⟨area, issued⟩, ⟨pending, shown⟩⟩ := s
+  obtain ⟨me, tiles, screen₀, ⟨area, issued⟩, ⟨pending, shown, since⟩⟩ := s
   obtain ⟨hnone, hshown⟩ := hfrozen
   cases area with
   | none =>
     simp at hnone
     obtain ⟨rfl, rfl⟩ := hnone
-    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, DraftOk, UpdatingOk]
+    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, SelectedOk, UpdatingOk,
+      SinceOk]
   | some area =>
-    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, DraftOk,
-      Effect.seq?, UpdatingOk]
+    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, SelectedOk,
+      Effect.seq?, UpdatingOk, SinceOk]
+    omega
 
 theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
     (hinv : Inv server sys) (h : perform sys.app op = some st) :
@@ -353,7 +369,7 @@ theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
   | loggingOut _ => cases op <;> simp [perform] at h
   | loggedIn s =>
     simp only [Inv] at hinv
-    obtain ⟨hlane, hsearch, hok, hlist, hupd⟩ := hinv
+    obtain ⟨hlane, hsearch, hok, hlist, hupd, hsince⟩ := hinv
     have hfrozen := hlist.frozen
     obtain ⟨me, tiles, screen, map, search⟩ := s
     cases op <;> cases screen <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
@@ -363,14 +379,14 @@ theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
       | obtain ⟨hc, rfl⟩ := h
     all_goals first
       | (apply inv_searchTo <;>
-           simp_all [Session.inflight, DraftOk, Screen.draft?, FrozenOk, UpdatingOk] <;> done)
+           simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, FrozenOk, UpdatingOk] <;> done)
       | (simp only [Inv]
-         refine ⟨?_, ?_, ?_, ?_, hfrozen⟩ <;>
-           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy, Effect.seq?] <;> done)
+         refine ⟨?_, ?_, ?_, ?_, hfrozen, hsince⟩ <;>
+           simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, Screen.isBusy, Effect.seq?] <;> done)
       | (simp only [Inv, Session.to]
          refine ⟨?_, ?_, ?_, hlist.mono rfl rfl rfl (fun x hx => List.mem_append_left _ hx), ?_⟩ <;>
-           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy, Effect.seq?,
-             UpdatingOk] <;> done)
+           simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, Screen.isBusy, Effect.seq?,
+             UpdatingOk] <;> (try (intro sel x y _ h e; subst e; exact h)) <;> done)
 
 /-- 検索のほかの副作用への応答は、不変条件を保つ。 -/
 theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Effect P}
@@ -387,12 +403,12 @@ theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Eff
     obtain ⟨rfl, hl⟩ := lane_single he hl
     have hs := hs.remove
     cases hans <;> simp [receive] at h <;> subst h
-    · apply inv_searchTo <;> simp_all [Session.fresh, Session.inflight, DraftOk, Screen.draft?,
+    · apply inv_searchTo <;> simp_all [Session.fresh, Session.inflight, SelectedOk, SinceOk, Screen.draft?,
         FrozenOk, UpdatingOk]
     · simp_all [Inv, Effect.seq?]
   | loggingOut sess =>
     simp only [Inv] at hinv
-    obtain ⟨hl, hs, hbusy, hok, hfrozen⟩ := hinv
+    obtain ⟨hl, hs, hbusy, hok, hfrozen, hsince⟩ := hinv
     obtain ⟨rfl, hl⟩ := lane_single he hl
     have hs := hs.remove
     cases hans <;> simp [receive] at h <;> subst h
@@ -400,7 +416,7 @@ theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Eff
     · apply inv_searchTo <;> simp_all [inflight_of_not_busy hbusy, updatingOk_of_not_busy hbusy]
   | loggedIn sess =>
     simp only [Inv] at hinv
-    obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+    obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
     have hs := hs.remove
     have hlist' := hlist.remove_lane he
     have hfrozen := hlist.frozen
@@ -413,11 +429,11 @@ theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Eff
            (try split at h) <;> subst h)
     all_goals first
       | (apply inv_searchTo <;>
-           simp_all [Session.inflight, DraftOk, Screen.draft?, FrozenOk, UpdatingOk] <;> done)
+           simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, FrozenOk, UpdatingOk] <;> done)
       | (simp only [Inv] at *; simp_all; done)
       | (simp only [Inv, Session.to]
          refine ⟨?_, ?_, ?_, hlist'.mono rfl rfl rfl (fun x hx => List.mem_append_left _ hx), ?_⟩ <;>
-           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy, UpdatingOk] <;> done)
+           simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, Screen.isBusy, UpdatingOk] <;> done)
 
 /-- 検索の応答は、不変条件を保つ。いちばん新しい検索への応答なら一覧を替え、ほかは何も変えない。 -/
 theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Query P}
@@ -437,20 +453,21 @@ theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Q
   | loggingOut _ =>
     simp [receive] at h; subst h
     simp only [Inv, lane_split_search, List.append_nil] at hinv ⊢
-    obtain ⟨hl, hs, hb, hok, hf⟩ := hinv
-    exact ⟨hl, hs.remove, hb, hok, hf⟩
+    obtain ⟨hl, hs, hb, hok, hf, hsince⟩ := hinv
+    exact ⟨hl, hs.remove, hb, hok, hf, hsince⟩
   | loggedIn sess =>
     simp only [Inv, lane_split_search] at hinv
-    obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+    obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
     have hs' := hs.remove
-    obtain ⟨me, tiles, screen, map, ⟨pending, shown⟩⟩ := sess
+    obtain ⟨me, tiles, screen, map, ⟨pending, shown, since⟩⟩ := sess
+    obtain ⟨hsi, hsp, hss⟩ := hsince
     simp only [receive, onSearched, Option.some.injEq] at h
     subst h
     cases hpend : pending with
     | none =>
       subst hpend
       simp only [Inv, List.append_nil]
-      exact ⟨hl, hs', hok, hlist.remove (fun q' hq' => by simp at hq'), hupd⟩
+      exact ⟨hl, hs', hok, hlist.remove (fun q' hq' => by simp at hq'), hupd, hsi, hsp, hss⟩
     | some q' =>
       subst hpend
       by_cases hseq : q'.seq = q.seq
@@ -464,20 +481,23 @@ theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Q
         | found hits =>
           simp only [hseq, ↓reduceIte, Inv, List.append_nil]
           refine ⟨hl, hs', hok, ⟨fun _ h => by simp at h, fun _ => by simpa [Listing.query] using harea,
-            fun q'' hits'' h => ?_⟩, hupd⟩
+            fun q'' hits'' h => ?_⟩, hupd, hsi, fun _ h => by simp at h,
+            fun l h => by simp at h; subst h; exact hsp _ rfl⟩
           simp at h
           obtain ⟨rfl, rfl⟩ := h
           exact hr _ rfl
         | failed =>
           simp only [hseq, ↓reduceIte, Inv, List.append_nil]
           exact ⟨hl, hs', hok, ⟨fun _ h => by simp at h, fun _ => by simpa [Listing.query] using harea,
-            fun _ _ h => by simp at h⟩, hupd⟩
+            fun _ _ h => by simp at h⟩, hupd, hsi, fun _ h => by simp at h,
+            fun l h => by simp at h; subst h; exact hsp _ rfl⟩
         | identityChanged =>
           simp only [hseq, ↓reduceIte]
           split
           · simp only [Inv, List.append_nil]
             exact ⟨hl, hs', hok, ⟨fun _ h => by simp at h,
-              fun _ => by simpa [Listing.query] using harea, fun _ _ h => by simp at h⟩, hupd⟩
+              fun _ => by simpa [Listing.query] using harea, fun _ _ h => by simp at h⟩, hupd, hsi,
+              fun _ h => by simp at h, fun l h => by simp at h; subst h; exact hsp _ rfl⟩
           · rename_i hbusy
             simp only [Inv, List.append_nil]
             refine ⟨?_, hs'⟩
@@ -485,7 +505,7 @@ theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Q
             exact inflight_of_not_busy (by simpa using hbusy)
       · -- 古い検索への応答。何も変えない
         simp only [hseq, ↓reduceIte, Inv, List.append_nil]
-        refine ⟨hl, hs', hok, hlist.remove (fun q'' hq'' heq => ?_), hupd⟩
+        refine ⟨hl, hs', hok, hlist.remove (fun q'' hq'' heq => ?_), hupd, hsi, hsp, hss⟩
         simp at hq''
         subst hq''
         simp at heq
@@ -515,10 +535,10 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
     cases app with
     | loggedIn s =>
       simp only [Inv] at hinv
-      obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+      obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
       simp only [notify]
       split
-      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd⟩
+      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd, hsince⟩
       · rename_i hbusy
         simp only [Inv, List.append_nil]
         exact ⟨by rw [hl]; exact inflight_of_not_busy (by simpa using hbusy), hs⟩
@@ -529,12 +549,13 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
     | loggingIn _ _ => simpa [notify, Inv, MapView.movedTo] using hinv
     | loggingOut s =>
       simp only [Inv] at hinv
-      obtain ⟨hl, hs, hb, hok, -, hshown⟩ := hinv
+      obtain ⟨hl, hs, hb, hok, ⟨-, hshown⟩, hsince⟩ := hinv
       simp only [notify, Inv, List.append_nil]
-      exact ⟨hl, hs, hb, hok, fun h => by simp [MapView.movedTo] at h, hshown⟩
+      exact ⟨hl, hs, hb, hok, ⟨fun h => by simp [MapView.movedTo] at h, hshown⟩,
+        by simpa [SinceOk, MapView.movedTo] using hsince⟩
     | loggedIn s =>
       simp only [Inv] at hinv
-      obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+      obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
       have hfrozen := hlist.frozen
       simp only [notify]
       apply inv_searchTo
@@ -543,11 +564,12 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
       · exact hok
       · exact ⟨fun h => by simp [MapView.movedTo] at h, hfrozen.2⟩
       · exact hupd
+      · simpa [SinceOk, MapView.movedTo] using hsince
   | changed c =>
     cases app with
     | loggedIn s =>
       simp only [Inv] at hinv
-      obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+      obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
       have hfrozen := hlist.frozen
       simp only [notify]
       split
@@ -556,28 +578,52 @@ theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv server sys)
         cases screen <;> simp only [onChanged, Session.refreshTo] <;> (try split)
         all_goals first
           | (apply inv_searchTo <;>
-               simp_all [Session.inflight, DraftOk, Screen.draft?, UpdatingOk, Screen.isBusy,
+               simp_all [Session.inflight, SelectedOk, SinceOk, Screen.draft?, UpdatingOk, Screen.isBusy,
                  FrozenOk] <;> done)
           | (rename_i hkey
              simp only [Inv, Session.to, List.append_nil]
-             refine ⟨by simpa [Session.inflight] using hl, hs, hok, hlist, ?_⟩
-             intro e k hk
+             refine ⟨by simpa [Session.inflight] using hl, hs, by simp [SelectedOk], hlist, ?_, hsince⟩
+             intro k hk
              simp at hk
-             obtain ⟨-, rfl, -⟩ := hk
+             subst hk
              simpa [NoticeOk, hkey] using hn)
-      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd⟩
+      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd, hsince⟩
     | _ => simpa [notify] using hinv
   | resumed actor =>
     cases app with
     | loggedIn s =>
       simp only [Inv] at hinv
-      obtain ⟨hl, hs, hok, hlist, hupd⟩ := hinv
+      obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
       have hfrozen := hlist.frozen
       simp only [notify]
       split
       · simp only [Session.refreshTo]
-        apply inv_searchTo <;> simp_all [Session.inflight, DraftOk, UpdatingOk, FrozenOk]
-      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd⟩
+        apply inv_searchTo <;> simp_all [Session.inflight, SelectedOk, UpdatingOk, FrozenOk, SinceOk]
+      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd, hsince⟩
+    | _ => simpa [notify] using hinv
+  | permissionChanged me' =>
+    cases app with
+    | loggedIn s =>
+      simp only [Inv] at hinv
+      obtain ⟨hl, hs, hok, hlist, hupd, hsince⟩ := hinv
+      have hfrozen := hlist.frozen
+      simp only [notify]
+      split
+      · rename_i hid
+        obtain ⟨me, tiles, screen, map, search⟩ := s
+        simp only at hid
+        cases screen <;> simp only [Session.withPermission, Session.refreshTo] <;> apply inv_searchTo <;>
+          simp_all [Session.inflight, SelectedOk, SinceOk, UpdatingOk, FrozenOk, Screen.isBusy]
+      · simpa [Inv] using ⟨hl, hs, hok, hlist, hupd, hsince⟩
+    | loggingOut s =>
+      simp only [Inv] at hinv
+      obtain ⟨hl, hs, hb, hok, hf, hsince⟩ := hinv
+      simp only [notify]
+      split
+      · obtain ⟨me, tiles, screen, map, search⟩ := s
+        cases screen <;> simp_all [Inv, Session.withPermission, SelectedOk, SinceOk, FrozenOk,
+          Screen.isBusy]
+      · simpa [Inv] using ⟨hl, hs, hb, hok, hf, hsince⟩
     | _ => simpa [notify] using hinv
 
 theorem reachable_inv {sys : Sys P F} (h : Reachable server sys) : Inv server sys := by
@@ -630,13 +676,6 @@ theorem lane_single_flight {sys : Sys P F} (h : Reachable server sys) :
     rw [hinv.1]
     cases screen <;> simp [Session.inflight]
   | _ => simp only [Inv] at hinv; simp [hinv.1]
-
-/-- 描画の権限: 到達できる状態では、下書きは編集できる人にしかなく、市職員の下書きは自分の市。 -/
-theorem draft_permission {sys : Sys P F} {s : Session P F} (h : Reachable server sys)
-    (hs : sys.app.session? = some s) : DraftOk s := by
-  have hinv := reachable_inv h
-  obtain ⟨app, fl⟩ := sys
-  cases app <;> simp [State.session?] at hs <;> subst hs <;> simp_all [Inv]
 
 /-- P6 UIの排他: 保存中は描画開始を差し出さない。到達できるかに関係なく、どの状態でも。 -/
 theorem p6 (s : State P F) (key : String) (h : s.isBusy = true) :
@@ -786,6 +825,24 @@ theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful
   | mapMoved area =>
     cases s <;> simp only [notify] <;> (try simp_searchTo) <;>
       simp_all [State.doubtful?, State.draft?, State.session?]
+  | permissionChanged me' =>
+    cases s with
+    | loggedIn sess =>
+      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      simp only [notify]
+      split
+      · cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
+          simp only [Session.withPermission, Session.refreshTo] <;> simp_searchTo <;>
+          simp [Screen.doubtful?]
+      · simp_all
+    | loggingOut sess =>
+      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      simp only [notify]
+      split
+      · cases screen <;> simp_all [State.doubtful?, State.draft?, State.session?,
+          Session.withPermission, Screen.doubtful?]
+      · simp_all
+    | _ => simp_all [notify]
   | changed c =>
     cases s with
     | loggedIn sess =>
@@ -933,7 +990,7 @@ theorem p13_shown_ok {sys : Sys P F} {s : Session P F} {q : Query P} {hits : Lis
   obtain ⟨app, fl⟩ := sys
   cases app <;> simp [State.session?] at hs <;> subst hs <;> simp only [Inv] at hinv
   · exact hinv.2.2.2.1.2.2 q hits hl
-  · exact hinv.2.2.2.2.2 q hits hl
+  · exact hinv.2.2.2.2.1.2 q hits hl
 
 /-- P13(3) 検索中でなければ、一覧は今見えている範囲のもの。応答が送った順に届かなくても、
     最後に動かした範囲と違う範囲の一覧を、検索が終わったものとして出さない。 -/
@@ -994,6 +1051,12 @@ theorem notice_keeps_busy (s : State P F) (n : Notice P) (h : s.isBusy = true) :
       split
       · simp only [Session.refreshTo]; simp_searchTo; exact h
       · simpa [State.isBusy] using h
+    | permissionChanged me' =>
+      simp only [notify]
+      split
+      · cases screen <;> simp [Screen.isBusy] at h <;>
+          simp only [Session.withPermission, Session.refreshTo] <;> simp_searchTo <;> simp [Screen.isBusy]
+      · simpa [State.isBusy] using h
   | _ => simp [State.isBusy] at h
 
 /-- P14 前の本人の流れから届いた変更の知らせは、何も変えない(ログインし直す前に開いた流れから、
@@ -1032,6 +1095,12 @@ theorem p14_stale_only_newer {s s' : Session P F} {e e' : Edit} {f f' : Bool} {n
       rw [searchTo_screen h, hs] at hs'
       simp at hs'
     · simp at h; subst h; rw [hs] at hs'; simp at hs'
+  | permissionChanged me' =>
+    simp only [notify] at h
+    split at h
+    · simp only [Session.withPermission, Session.refreshTo, hs] at h
+      simp [searchTo_screen h] at hs'
+    · simp at h; subst h; rw [hs] at hs'; simp at hs'
 
 /-- P14 結果が分からない更新を、知らせで成功(閲覧)にするのは、そのキーが効いたときだけ。
     サーバーは効いたキーしか知らせないので(`NoticeOk`)、送り直さずに済むのは本当に効いたときだけ。 -/
@@ -1061,13 +1130,20 @@ theorem p14_unknown_resolved_applied {s s' : Session P F} {e : Edit} {k : String
       rw [searchTo_screen h, hs] at hs'
       simp at hs'
     · simp at h; subst h; rw [hs] at hs'; simp at hs'
+  | permissionChanged me' =>
+    simp only [notify] at h
+    split at h
+    · simp only [Session.withPermission, Session.refreshTo, hs] at h
+      simp [searchTo_screen h] at hs'
+    · simp at h; subst h; rw [hs] at hs'; simp at hs'
 
-/-- P14 更新中に、応答を受け取って成功(閲覧)にするのは、そのキーが効いたときだけ。成功の応答か、
+/-- P14 更新中(送り直しを含む)に、応答を受け取って成功(閲覧)にするのは、そのキーが効いたときだけ。成功の応答か、
     効いたという知らせを先に受けたうえでの結果不明の応答のどちらか。 -/
 theorem p14_update_success_applied {sys : Sys P F} {s s' : Session P F} {e : Edit} {k : String}
     {a : Bool} {pre post : List (Effect P)} {eff : Effect P} {r : Reply F} {st : Step P F}
     {sel : Option (Selected P F)}
-    (h : Reachable server sys) (happ : sys.app = .loggedIn s) (hs : s.screen = .updating e k a)
+    (h : Reachable server sys) (happ : sys.app = .loggedIn s)
+    (hs : s.screen = .updating e k a ∨ s.screen = .reupdating e k a)
     (hfl : sys.inflight = pre ++ eff :: post) (hans : Answers server eff r)
     (hr : receive (.loggedIn s) r = some st) (hst : st.state = .loggedIn s')
     (hs' : s'.screen = .view sel) : server.applied k := by
@@ -1076,27 +1152,118 @@ theorem p14_update_success_applied {sys : Sys P F} {s s' : Session P F} {e : Edi
   simp only at happ hfl
   subst happ hfl
   simp only [Inv] at hinv
-  obtain ⟨hl, -, -, -, hupd⟩ := hinv
+  obtain ⟨hl, -, -, -, hupd, -⟩ := hinv
+  have hkey : a = true → server.applied k := fun ha =>
+    hupd k (by rcases hs with hs | hs <;> simp [hs, ha])
   by_cases hseq : eff.seq? = none
-  · have hin : s.inflight = [Effect.update e k s.me.id] := by simp [Session.inflight, hs]
+  · have hin : s.inflight = [Effect.update e k s.me.id] := by
+      rcases hs with hs | hs <;> simp [Session.inflight, hs]
     rw [hin] at hl
     obtain ⟨rfl, -⟩ := lane_single hseq hl
     cases hans with
     | updated happlied => exact happlied
     | updateUnknown =>
       cases a
-      · simp [receive, onReply, hs, Session.to] at hr
-        subst hr
-        simp at hst
-        subst hst
-        simp at hs'
-      · exact hupd e k hs
+      · rcases hs with hs | hs <;> simp [receive, onReply, hs, Session.to] at hr <;> subst hr <;>
+          simp at hst <;> subst hst <;> simp at hs'
+      · exact hkey rfl
     | _ =>
-      simp [receive, onReply, hs, Session.to, Screen.isBusy] at hr
-      subst hr
-      simp at hst
-      try (subst hst; simp at hs')
-  · cases hans <;> simp [Effect.seq?] at hseq <;> simp [receive] at hr <;> subst hr <;>
-      (rw [onSearched_screen hst, hs] at hs'; simp at hs')
+      rcases hs with hs | hs <;> simp [receive, onReply, hs, Session.to, Screen.isBusy] at hr <;>
+        subst hr <;> simp at hst <;> (try (subst hst; simp at hs'))
+  · rcases hs with hs | hs <;> cases hans <;> simp [Effect.seq?] at hseq <;> simp [receive] at hr <;>
+      subst hr <;> (rw [onSearched_screen hst, hs] at hs'; simp at hs')
+
+/-! ## 権限の追従(P15): ログインしている間に権限が変わっても、知らされた最新の権限に従う -/
+
+/-- P15 確定で保存を送るのは、送るときの本人がその下書きを描けるときだけ(編集権限があり、管理者か、担当の市)。
+    結果が分からない下書きの再送は、もう送った要求を送り直すだけなので含めない(サーバーが今の権限で判断する。P3)。
+    事例研究3までは「下書きがあるのは編集できる人だけ」(`DraftOk`)を不変条件にしていたが、ログインの途中で
+    権限が変わると下書きは残るので成り立たなくなった。送るときの権限についての定理に言い直した。 -/
+theorem p15_commit_permitted {s : Session P F} {op : Op P F} {st : Step P F} {d : Draft P}
+    {a : String} (h : perform (.loggedIn s) op = some st) (hs : Effect.save d a ∈ st.effects)
+    (hop : op.kind ≠ .resend) : canDraw s.me d = true := by
+  obtain ⟨me, tiles, screen, map, search⟩ := s
+  cases op <;> simp [Op.kind] at hop <;> cases screen <;>
+    simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
+  all_goals (try split at h) <;> (try simp at h)
+  all_goals first
+    | (obtain ⟨hc, rfl⟩ := h
+       simp [Session.to] at hs
+       all_goals (obtain ⟨rfl, -⟩ := hs; exact hc.2))
+    | (subst h; simp_searchTo; simp [Session.to] at hs)
+    | (subst h; simp [Session.to] at hs)
+
+/-- P15 編集の保存で更新を送るのは、送るときの本人がその地物を編集できるときだけ。結果が分からない更新の再送は
+    含めない(同じキーの送り直しで、サーバーが判断する)。 -/
+theorem p15_save_edit_permitted {s : Session P F} {op : Op P F} {st : Step P F} {e : Edit}
+    {k a : String} (h : perform (.loggedIn s) op = some st) (hs : Effect.update e k a ∈ st.effects)
+    (hop : op.kind ≠ .resend) : canEditFeature s.me e.ref = true := by
+  obtain ⟨me, tiles, screen, map, search⟩ := s
+  cases op <;> simp [Op.kind] at hop <;> cases screen <;>
+    simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
+  all_goals (try split at h) <;> (try simp at h)
+  all_goals first
+    | (obtain ⟨hc, rfl⟩ := h
+       simp [Session.to] at hs
+       all_goals (first | (obtain ⟨rfl, -⟩ := hs; exact hc) | exact absurd hs (by simp)))
+    | (subst h; simp_searchTo; simp [Session.to] at hs)
+    | (subst h; simp [Session.to] at hs)
+
+/-- P15 ポップアップの地物は、今の本人が読めるもの。地図で選ぶときに今の権限で確かめ、権限が変わったら外す
+    (権限が変わった直後は、古い権限のタイルがまだ描かれていることがある)。 -/
+theorem p15_selected_readable {sys : Sys P F} {s : Session P F} {sel : Selected P F}
+    (h : Reachable server sys) (hs : sys.app = .loggedIn s) (hsel : s.screen = .view (some sel)) :
+    canReadFeature s.me sel.ref = true := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  simp only at hs
+  subst hs
+  simp only [Inv] at hinv
+  exact hinv.2.2.1 sel hsel
+
+/-- P15 一覧は、今の権限になってから送った検索の結果だけ。権限が変わったと知らされたら一覧を消し、番号の始まり
+    (`since`)を置き直すので、知らされる前に送った検索の応答は、届いても出さない。知らされたあとに送った検索は、
+    サーバーが新しい権限で答える(RLS は要求ごとに DB の権限を読む。tests/properties で確かめる)。 -/
+theorem p15_listing_since {sys : Sys P F} {s : Session P F} {l : Listing P F}
+    (h : Reachable server sys) (hs : sys.app = .loggedIn s) (hl : s.search.shown = some l) :
+    s.search.since ≤ l.query.seq := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  simp only at hs
+  subst hs
+  simp only [Inv] at hinv
+  exact hinv.2.2.2.2.2.2.2 l hl
+
+/-- P15 今の本人の権限が変わったと知らされたら、本人を差し替え、選んでいた地物と一覧を消す。 -/
+theorem p15_change_applied {s : Session P F} {me : Me} (hid : me.id = s.me.id) (hne : me ≠ s.me) :
+    ∃ s', (notify (.loggedIn s) (.permissionChanged me)).state = .loggedIn s' ∧ s'.me = me ∧
+      s'.search.shown = none ∧ ∀ sel, s'.screen ≠ .view (some sel) := by
+  obtain ⟨me₀, tiles, screen, ⟨area, issued⟩, search⟩ := s
+  simp only at hid hne
+  cases area <;> cases screen <;>
+    simp [notify, hid, hne, Session.withPermission, Session.refreshTo, Session.searchTo, Session.to]
+
+/-- P15 今の権限と同じ権限の知らせ(変更の流れをつなぐたびにサーバーが送る)では、何も変えない
+    (つなぎ直すたびに、選んでいる地物や一覧を消さない)。 -/
+theorem p15_same_permission_ignored {s : Session P F} :
+    notify (.loggedIn s) (.permissionChanged s.me) = ⟨.loggedIn s, []⟩ := by
+  simp [notify]
+
+/-- P15 結果が分からない更新の送り直しが拒否されても、結果不明のまま(中身とキーを持っておく)。
+    権限を外されたあとは、前に効いたキーの送り直しもサーバーが拒否する(RLS がキーを見るより先に効く。
+    tests/properties/p15-permission-change.test.ts で測った)ので、送り直しの拒否は「効かなかった」ことを
+    意味しない。更新失敗として編集に戻すのは、初めて送った更新が拒否されたときだけ。 -/
+theorem p15_resend_rejected_unknown {sess : Session P F} {e : Edit} {key : String} {a : Bool}
+    {st : Step P F} (hs : sess.screen = .reupdating e key a)
+    (h : receive (.loggedIn sess) .rejected = some st) :
+    st.state = .loggedIn { sess with screen := .updateUnknown e key true } := by
+  obtain ⟨me, tiles, screen, map, search⟩ := sess
+  simp at hs; subst hs
+  simp [receive, onReply] at h; subst h; rfl
+
+/-- P15 別の人の権限の知らせは捨てる(本人の流れにしか流れないが、念のため)。 -/
+theorem p15_other_user_ignored {s : Session P F} {me : Me} (h : me.id ≠ s.me.id) :
+    notify (.loggedIn s) (.permissionChanged me) = ⟨.loggedIn s, []⟩ := by
+  simp [notify, h]
 
 end App

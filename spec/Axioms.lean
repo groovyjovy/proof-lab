@@ -11,7 +11,6 @@ import Spec
 #print axioms App.lane_single_flight
 #print axioms App.l1_exit
 #print axioms App.receive_only_searches
-#print axioms App.draft_permission
 #print axioms App.p6
 #print axioms App.p10_perform
 #print axioms App.p10_receive
@@ -32,6 +31,14 @@ import Spec
 #print axioms App.p14_stale_only_newer
 #print axioms App.p14_unknown_resolved_applied
 #print axioms App.p14_update_success_applied
+#print axioms App.p15_commit_permitted
+#print axioms App.p15_save_edit_permitted
+#print axioms App.p15_selected_readable
+#print axioms App.p15_listing_since
+#print axioms App.p15_change_applied
+#print axioms App.p15_other_user_ignored
+#print axioms App.p15_same_permission_ignored
+#print axioms App.p15_resend_rejected_unknown
 
 -- 認可とサーバー(spec/Spec/AuthzProofs.lean)
 #print axioms Authz.p1

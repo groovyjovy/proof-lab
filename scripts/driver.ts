@@ -56,6 +56,16 @@ export type App = ReturnType<typeof driver>;
 
 export const driver = (page: Page) => {
 	const root = page.locator('[data-app]');
+	const editUser = async (target: Role, endpoint: string, data: object) => {
+		const headers = { origin: new URL(page.url()).origin };
+		const { users } = await (await page.request.get('/api/auth/admin/list-users')).json();
+		const user = users.find((u: { email: string }) => u.email === userOf(target).email);
+		const res = await page.request.post(`/api/auth/admin/${endpoint}`, {
+			headers,
+			data: { userId: user.id, ...data }
+		});
+		return res.status();
+	};
 	const app = {
 		page,
 		kind: async () => {
@@ -120,16 +130,9 @@ export const driver = (page: Page) => {
 			await popup.waitFor();
 		},
 
-		async revokeEditPermission(target: Role) {
-			const headers = { origin: new URL(page.url()).origin };
-			const { users } = await (await page.request.get('/api/auth/admin/list-users')).json();
-			const user = users.find((u: { email: string }) => u.email === userOf(target).email);
-			const res = await page.request.post('/api/auth/admin/update-user', {
-				headers,
-				data: { userId: user.id, data: { canEdit: false } }
-			});
-			return res.status();
-		},
+		revokeEditPermission: (target: Role) =>
+			editUser(target, 'update-user', { data: { canEdit: false } }),
+		setRole: (target: Role, role: Role) => editUser(target, 'set-role', { role }),
 
 		hold: (path: string | RegExp, method = 'POST') => hold(page, path, method),
 

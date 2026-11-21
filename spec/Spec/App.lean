@@ -58,10 +58,12 @@ inductive Listing (P F : Type) where
 def Listing.query : Listing P F → Query P
   | .found q _ | .failed q => q
 
-/-- 範囲の一覧。応答を待つのは、いちばん新しい検索だけ(それより前の検索の応答は、届いても捨てる)。 -/
+/-- 範囲の一覧。応答を待つのは、いちばん新しい検索だけ(それより前の検索の応答は、届いても捨てる)。
+    `since` は、今の権限で振った最初の番号(P15)。権限が変わったら、一覧を消してここから振り直す。 -/
 structure Search (P F : Type) where
   pending : Option (Query P)
   shown : Option (Listing P F)
+  since : Nat
 
 /-- 編集中の値。版(`version`)は、サーバーから読み込んだときのもの。 -/
 structure Edit where
@@ -86,6 +88,9 @@ inductive Screen (P F : Type) where
       変更の知らせが、応答より先に届いたこと(P14) -/
   | updating (edit : Edit) (key : String) (applied : Bool)
   | updateUnknown (edit : Edit) (key : String) (failed : Bool)
+  /-- 結果が分からない更新を、同じキーで送り直した(P12)。拒否されても、前に送ったときに効いたかもしれない
+      ので、結果不明に戻る(P15: 権限を外されたあとは、効いたキーの送り直しもサーバーが拒否する) -/
+  | reupdating (edit : Edit) (key : String) (applied : Bool)
   /-- ほかの人が先に保存していた(P4)。読み直すまで更新を送らない -/
   | conflicted (edit : Edit)
 
@@ -190,6 +195,9 @@ inductive Notice (P : Type) where
   | changed (c : Change)
   /-- 変更の流れが切れて、つなぎ直した。切れている間の変更は、取りこぼしたかもしれない -/
   | resumed (actor : String)
+  /-- 本人の権限(ロール・編集権限)が変わった(P15)。変更の流れから届く。中身は、サーバーが DB から
+      読んだ新しい本人 -/
+  | permissionChanged (me : Me)
 
 inductive Effect (P : Type) where
   | login (email : String)
@@ -209,16 +217,25 @@ variable {P F : Type}
 
 /-- 副作用の応答を待っている。この間は、ほかの副作用を出さない(飛んでいる副作用は高々1つ)。 -/
 def Screen.isBusy : Screen P F → Bool
-  | .saving _ | .resaving _ | .loading _ | .updating _ _ _ => true
+  | .saving _ | .resaving _ | .loading _ | .updating _ _ _ | .reupdating _ _ _ => true
   | _ => false
 
 /-- 本人が、選んだ地物を編集できるか。サーバーの RLS と同じ判断(`Authz.canWrite`)を使う。 -/
 def canEditFeature (me : Me) (ref : Ref) : Bool :=
   Authz.canWrite ⟨me.role, me.canEdit⟩ ref.feature
 
+/-- 本人が、その地物を読めるか。サーバーの RLS と同じ判断(`Authz.canRead`)を使う(P15)。 -/
+def canReadFeature (me : Me) (ref : Ref) : Bool :=
+  Authz.canRead ⟨me.role, me.canEdit⟩ ref.feature
+
+/-- 本人が、その下書きを保存できるか。サーバーの作成の判断(`Authz.canCreate`、RLS の with check)と同じ
+    判断を使う(P15)。 -/
+def canDraw (me : Me) (d : Draft P) : Bool :=
+  Authz.canCreate ⟨me.role, me.canEdit⟩ ⟨d.city, d.isPublic⟩
+
 /-- ログインした直後のセッション。一覧は空で、地図はそれまでのもの。 -/
 def Session.fresh (me : Me) (map : MapView P) : Session P F :=
-  { me, tiles := 0, screen := .view none, map, search := ⟨none, none⟩ }
+  { me, tiles := 0, screen := .view none, map, search := ⟨none, none, map.issued⟩ }
 
 /-- ページを読み込んだときの状態。ページを読み込み直すと飛んでいた要求もなくなるので、番号は 0 から振る。 -/
 def init (me : Option Me) : State P F :=
@@ -247,7 +264,10 @@ def Session.refreshTo (s : Session P F) (screen : Screen P F) : Step P F :=
 def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .clickMap pos feature =>
     match s.screen with
-    | .view _ => some (s.to (.view (feature.map fun (ref, props) => ⟨pos, ref, props⟩)))
+    | .view _ =>
+      -- 今の権限で読めない地物は選ばない(権限が変わった直後は、古いタイルがまだ描かれていることがある。P15)
+      some (s.to (.view ((feature.filter fun (ref, _) => canReadFeature s.me ref).map
+        fun (ref, props) => ⟨pos, ref, props⟩)))
     | .drawing d failed => some (s.to (.drawing { d with points := d.points ++ [pos] } failed))
     | _ => none
   | .closePopup =>
@@ -271,7 +291,7 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .commit =>
     match s.screen with
     | .drawing d _ =>
-      if 3 ≤ d.points.length then some (s.to (.saving d) [.save d s.me.id]) else none
+      if 3 ≤ d.points.length ∧ canDraw s.me d then some (s.to (.saving d) [.save d s.me.id]) else none
     | _ => none
   | .cancel =>
     match s.screen with
@@ -281,7 +301,7 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .resend =>
     match s.screen with
     | .unknown d _ => some (s.to (.resaving d) [.save d s.me.id])
-    | .updateUnknown e key _ => some (s.to (.updating e key false) [.update e key s.me.id])
+    | .updateUnknown e key _ => some (s.to (.reupdating e key false) [.update e key s.me.id])
     | _ => none
   | .startEdit =>
     match s.screen with
@@ -299,7 +319,9 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .saveEdit key =>
     match s.screen with
-    | .editing e _ _ => some (s.to (.updating e key false) [.update e key s.me.id])
+    | .editing e _ _ =>
+      if canEditFeature s.me e.ref then some (s.to (.updating e key false) [.update e key s.me.id])
+      else none
     | _ => none
   | .reload =>
     match s.screen with
@@ -323,12 +345,12 @@ def identityChangedMessage : String :=
 def onReply (s : Session P F) : Reply F → Option (Step P F)
   | .saved =>
     match s.screen with
-    | .saving _ | .resaving _ | .updating _ _ _ => some (s.refreshTo (.view none))
+    | .saving _ | .resaving _ | .updating _ _ _ | .reupdating _ _ _ => some (s.refreshTo (.view none))
     | _ => none
   | .unknown =>
     match s.screen with
     | .saving d | .resaving d => some (s.to (.unknown d false))
-    | .updating e key applied =>
+    | .updating e key applied | .reupdating e key applied =>
       -- 効いたという知らせが先に届いていれば、応答が分からなくても成功(P14)
       some (if applied then s.refreshTo (.view none) else s.to (.updateUnknown e key false))
     | _ => none
@@ -337,6 +359,8 @@ def onReply (s : Session P F) : Reply F → Option (Step P F)
     | .saving d => some (s.to (.drawing d true))
     | .resaving d => some (s.to (.unknown d true))
     | .updating e _ _ => some (s.to (.editing e true false))
+    -- 送り直しが拒否されても、前に送ったときに効いたかもしれない(P15)
+    | .reupdating e key _ => some (s.to (.updateUnknown e key true))
     | _ => none
   | .identityChanged =>
     if s.screen.isBusy then some ⟨.loggedOut (some identityChangedMessage) s.map, []⟩ else none
@@ -350,7 +374,7 @@ def onReply (s : Session P F) : Reply F → Option (Step P F)
     | _ => none
   | .conflict =>
     match s.screen with
-    | .updating e _ _ => some (s.to (.conflicted e))
+    | .updating e _ _ | .reupdating e _ _ => some (s.to (.conflicted e))
     | _ => none
   | _ => none
 
@@ -362,10 +386,13 @@ def onSearched (s : Session P F) (seq : Nat) (r : SearchResult F) : Step P F :=
   | some q =>
     if q.seq = seq then
       match r with
-      | .found hits => ⟨.loggedIn { s with search := ⟨none, some (.found q hits)⟩ }, []⟩
-      | .failed => ⟨.loggedIn { s with search := ⟨none, some (.failed q)⟩ }, []⟩
+      | .found hits =>
+        ⟨.loggedIn { s with search := { s.search with pending := none, shown := some (.found q hits) } }, []⟩
+      | .failed =>
+        ⟨.loggedIn { s with search := { s.search with pending := none, shown := some (.failed q) } }, []⟩
       | .identityChanged =>
-        if s.screen.isBusy then ⟨.loggedIn { s with search := ⟨none, some (.failed q)⟩ }, []⟩
+        if s.screen.isBusy then
+          ⟨.loggedIn { s with search := { s.search with pending := none, shown := some (.failed q) } }, []⟩
         else ⟨.loggedOut (some identityChangedMessage) s.map, []⟩
     else ⟨.loggedIn s, []⟩
   | none => ⟨.loggedIn s, []⟩
@@ -392,6 +419,8 @@ def onChanged (s : Session P F) (c : Change) : Step P F :=
   match s.screen with
   | .updating e key _ =>
     if c.key = key then s.to (.updating e key true) else s.refreshTo s.screen
+  | .reupdating e key _ =>
+    if c.key = key then s.to (.reupdating e key true) else s.refreshTo s.screen
   | .updateUnknown _ key _ =>
     if c.key = key then s.refreshTo (.view none) else s.refreshTo s.screen
   | .editing e failed _ =>
@@ -399,11 +428,25 @@ def onChanged (s : Session P F) (c : Change) : Step P F :=
     else s.refreshTo s.screen
   | screen => s.refreshTo screen
 
+/-- 権限が変わったと知らされたセッション(P15)。本人を差し替え、選んでいた地物(古い権限のタイルの属性を
+    持っている)を外し、一覧を消して、今の権限での番号の始まり(`since`)を置き直す。下書きと編集は残す
+    (送れるかは、送るときの権限で決める)。応答待ちの画面はそのまま。 -/
+def Session.withPermission (s : Session P F) (me : Me) : Session P F :=
+  { s with me,
+           screen := match s.screen with
+             | .view _ => .view none
+             | screen => screen,
+           search := ⟨none, none, s.map.issued⟩ }
+
 /-- 知らせの受け取り。どの状態でも受け取る(`Option` ではない)。
     タイルの本人違い: 副作用の応答を待っている間は、その応答を捨てないように何もしない。
     要求にはどれも本人を書いてあるので、本人が変わっていればその応答で分かる。
     地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。
-    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る(`onChanged`)。 -/
+    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る(`onChanged`)。
+    権限が変わった: 今の本人の知らせで、権限が今のものと違えば、差し替えて地図と一覧を読み直す
+    (`withPermission`)。ログアウト中は、差し替えて一覧を消すだけにし、ログアウトに失敗したら検索し直す。
+    サーバーは変更の流れをつなぐたびに今の本人を送るので、変わっていなければ何もしない(つなぎ直すたびに
+    選択や一覧を消さない)。 -/
 def notify (s : State P F) : Notice P → Step P F
   | .tilesIdentityChanged =>
     match s with
@@ -424,6 +467,16 @@ def notify (s : State P F) : Notice P → Step P F
   | .resumed actor =>
     match s with
     | .loggedIn s => if actor = s.me.id then s.refreshTo s.screen else ⟨.loggedIn s, []⟩
+    | s => ⟨s, []⟩
+  | .permissionChanged me =>
+    match s with
+    | .loggedIn s =>
+      if me.id = s.me.id ∧ me ≠ s.me then
+        (s.withPermission me).refreshTo (s.withPermission me).screen
+      else ⟨.loggedIn s, []⟩
+    | .loggingOut s =>
+      if me.id = s.me.id ∧ me ≠ s.me then ⟨.loggingOut (s.withPermission me), []⟩
+      else ⟨.loggingOut s, []⟩
     | s => ⟨s, []⟩
 
 end App

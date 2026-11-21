@@ -1,4 +1,4 @@
-import { canWrite, type City, type Me } from '#lib/domain.ts';
+import { canRead, canWrite, type City, type Me } from '#lib/domain.ts';
 
 export type Point = [lng: number, lat: number];
 export type Draft = { key: string; city: City; public: boolean; points: Point[] };
@@ -20,6 +20,9 @@ export type Screen =
 	/** `applied`: このキーが効いたという変更の知らせが、応答より先に届いた(P14) */
 	| { kind: '更新中'; edit: Edit; key: string; applied: boolean }
 	| { kind: '更新結果不明'; edit: Edit; key: string; notice: '再送失敗' | null }
+	/** 結果が分からない更新を、同じキーで送り直した(P12)。拒否されても、前に送ったときに効いたかもしれない
+	    ので、結果不明に戻る(P15: 権限を外されたあとは、効いたキーの送り直しもサーバーが拒否する) */
+	| { kind: '更新の再送中'; edit: Edit; key: string; applied: boolean }
 	| { kind: '競合'; edit: Edit };
 
 /** 地図に見えている範囲(南西の角と北東の角)。 */
@@ -33,8 +36,9 @@ export type MapView = { area: Area | null; issued: number };
 /** 一覧に出しているもの。どの検索への応答かを持つ。 */
 export type Listing =
 	{ kind: '見つかった'; query: Query; hits: Hit[] } | { kind: '検索できない'; query: Query };
-/** 範囲の一覧。応答を待つのは、いちばん新しい検索だけ(それより前の検索の応答は、届いても捨てる)。 */
-export type Search = { pending: Query | null; shown: Listing | null };
+/** 範囲の一覧。応答を待つのは、いちばん新しい検索だけ(それより前の検索の応答は、届いても捨てる)。
+    `since` は、今の権限で振った最初の番号(P15)。権限が変わったら、一覧を消してここから振り直す。 */
+export type Search = { pending: Query | null; shown: Listing | null; since: number };
 
 export type LoggedIn = {
 	kind: 'ログイン済み';
@@ -96,7 +100,10 @@ export type Notice =
 	| { type: '地図が動いた'; area: Area }
 	| { type: '地物が変わった'; change: Change }
 	/** 変更の流れが切れて、つなぎ直した。切れている間の変更は、取りこぼしたかもしれない */
-	| { type: '変更の流れをつなぎ直した'; as: string };
+	| { type: '変更の流れをつなぎ直した'; as: string }
+	/** 本人の権限(ロール・編集権限)が変わった(P15)。変更の流れから届く。中身は、サーバーが DB から
+	    読んだ新しい本人 */
+	| { type: '権限が変わった'; me: Me };
 
 export type Effect =
 	| { type: 'ログインする'; email: string }
@@ -119,7 +126,7 @@ const fresh = (me: Me, map: MapView): LoggedIn => ({
 	tiles: 0,
 	screen: { kind: '閲覧', selected: null },
 	map,
-	search: { pending: null, shown: null }
+	search: { pending: null, shown: null, since: map.issued }
 });
 
 /** ページを読み込んだときの状態。ページを読み込み直すと飛んでいた要求もなくなるので、番号は 0 から振る。 */
@@ -134,7 +141,8 @@ export const saving = (v: Screen): v is Extract<Screen, { kind: '保存中' | '�
 	v.kind === '保存中' || v.kind === '再送中';
 
 /** 副作用の応答を待っている。この間は、ほかの副作用を出さない(飛んでいる副作用は高々1つ)。 */
-export const busy = (v: Screen) => saving(v) || v.kind === '読込中' || v.kind === '更新中';
+export const busy = (v: Screen) =>
+	saving(v) || v.kind === '読込中' || v.kind === '更新中' || v.kind === '更新の再送中';
 
 const only = (state: State): Step => ({ state, effects: [] });
 
@@ -198,8 +206,12 @@ function onScreen(s: LoggedIn): Offers {
 	switch (v.kind) {
 		case '閲覧':
 			return {
+				// 今の権限で読めない地物は選ばない(権限が変わった直後は、古いタイルがまだ描かれていることがある。P15)
 				地図をクリック: (e) =>
-					to({ kind: '閲覧', selected: e.feature && { at: e.at, ...e.feature } }),
+					to({
+						kind: '閲覧',
+						selected: e.feature && canRead(s.me, e.feature.ref) ? { at: e.at, ...e.feature } : null
+					}),
 				ポップアップを閉じる: v.selected ? () => to({ kind: '閲覧', selected: null }) : undefined,
 				編集を始める:
 					v.selected && canWrite(s.me, v.selected.ref) ? () => load(v.selected!.ref) : undefined,
@@ -219,8 +231,9 @@ function onScreen(s: LoggedIn): Offers {
 				市を選ぶ:
 					s.me.role === 'admin' ? (e) => to({ ...v, draft: { ...d, city: e.city } }) : undefined,
 				公開を選ぶ: (e) => to({ ...v, draft: { ...d, public: e.public } }),
+				// 保存できるかは、送るときの権限で決める(P15)
 				確定:
-					d.points.length >= 3
+					d.points.length >= 3 && canWrite(s.me, d)
 						? () => to({ kind: '保存中', draft: d }, [{ type: '保存する', draft: d, as: s.me.id }])
 						: undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
@@ -239,14 +252,17 @@ function onScreen(s: LoggedIn): Offers {
 			return {
 				名前を変える: (op) => to({ ...v, edit: { ...e, name: op.name } }),
 				備考を変える: (op) => to({ ...v, edit: { ...e, note: op.note } }),
-				編集を保存: (op) => update(e, op.key),
+				編集を保存: canWrite(s.me, e.ref) ? (op) => update(e, op.key) : undefined,
 				読み直す: v.stale ? () => load(e.ref) : undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
 		}
 		case '更新結果不明':
 			return {
-				再送: () => update(v.edit, v.key),
+				再送: () =>
+					to({ kind: '更新の再送中', edit: v.edit, key: v.key, applied: false }, [
+						{ type: '更新する', edit: v.edit, key: v.key, as: s.me.id }
+					]),
 				取消: () => refreshTo(s, { kind: '閲覧', selected: null })
 			};
 		case '競合':
@@ -258,6 +274,7 @@ function onScreen(s: LoggedIn): Offers {
 		case '再送中':
 		case '読込中':
 		case '更新中':
+		case '更新の再送中':
 			return {};
 	}
 }
@@ -323,6 +340,7 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 					return undefined;
 			}
 		case '更新中':
+		case '更新の再送中':
 			switch (r.type) {
 				case '保存成功':
 					return refreshTo(s, { kind: '閲覧', selected: null });
@@ -332,7 +350,12 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 						? refreshTo(s, { kind: '閲覧', selected: null })
 						: to({ kind: '更新結果不明', edit: v.edit, key: v.key, notice: null });
 				case '保存失敗':
-					return to({ kind: '編集中', edit: v.edit, notice: '更新失敗', stale: false });
+					// 送り直しが拒否されても、前に送ったときに効いたかもしれない(P15)
+					return to(
+						v.kind === '更新中'
+							? { kind: '編集中', edit: v.edit, notice: '更新失敗', stale: false }
+							: { kind: '更新結果不明', edit: v.edit, key: v.key, notice: '再送失敗' }
+					);
 				case '競合した':
 					return to({ kind: '競合', edit: v.edit });
 				default:
@@ -347,7 +370,7 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 function onSearched(s: LoggedIn, seq: number, r: SearchResult): Step {
 	const query = s.search.pending;
 	if (!query || query.seq !== seq) return only(s);
-	const listed = (shown: Listing) => only({ ...s, search: { pending: null, shown } });
+	const listed = (shown: Listing) => only({ ...s, search: { ...s.search, pending: null, shown } });
 	switch (r.type) {
 		case '見つかった':
 			return listed({ kind: '見つかった', query, hits: r.hits });
@@ -364,7 +387,7 @@ export const identityChangedMessage =
 	'ほかの画面で別の利用者としてログインしたため、この画面での操作を止めました。もう一度ログインしてください';
 
 /** 地物が変わったという知らせ(P14)。地図と一覧は読み直す。応答待ちの状態は抜けない(応答を捨てない)。
-    - 更新中: 自分のキーなら、効いたと覚えておく(応答が結果不明でも成功にできる)
+    - 更新中(送り直しを含む): 自分のキーなら、効いたと覚えておく(応答が結果不明でも成功にできる)
     - 更新結果不明: 自分のキーなら、効いていたので成功
     - 編集中: 編集している地物が、読み込んだときより新しい版になったら知らせる。自分の更新が戻ってきた
       知らせは、読み込んだ版と同じなので知らせない */
@@ -372,6 +395,7 @@ function onChanged(s: LoggedIn, c: Change): Step {
 	const v = s.screen;
 	switch (v.kind) {
 		case '更新中':
+		case '更新の再送中':
 			return c.key === v.key ? only({ ...s, screen: { ...v, applied: true } }) : refreshTo(s, v);
 		case '更新結果不明':
 			return refreshTo(s, c.key === v.key ? { kind: '閲覧', selected: null } : v);
@@ -399,10 +423,29 @@ function mapMoved(s: State, area: Area): Step {
 	}
 }
 
+/** 権限が変わったと知らされたセッション(P15)。本人を差し替え、選んでいた地物(古い権限のタイルの属性を
+    持っている)を外し、一覧を消して、今の権限での番号の始まり(`since`)を置き直す。下書きと編集は残す
+    (送れるかは、送るときの権限で決める)。応答待ちの画面はそのまま。 */
+const withPermission = (s: LoggedIn, me: Me): LoggedIn => ({
+	...s,
+	me,
+	screen: s.screen.kind === '閲覧' ? { kind: '閲覧', selected: null } : s.screen,
+	search: { pending: null, shown: null, since: s.map.issued }
+});
+
+/** 同じ本人で、権限(または名前)が今のものと違う。 */
+const changedPermission = (now: Me, next: Me) =>
+	next.id === now.id &&
+	(next.name !== now.name || next.role !== now.role || next.canEdit !== now.canEdit);
+
 /** 知らせの受け取り。どの状態でも受け取る(`undefined` を返さない)。
     タイルの本人違い: 副作用の応答を待っている間は、その応答を捨てないように何もしない。
     地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。
-    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る。 */
+    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る。
+    権限が変わった: 今の本人の知らせで、権限が今のものと違えば、差し替えて地図と一覧を読み直す
+    (`withPermission`)。ログアウト中は、差し替えて一覧を消すだけにし、ログアウトに失敗したら検索し直す。
+    サーバーは変更の流れをつなぐたびに今の本人を送るので、変わっていなければ何もしない(つなぎ直すたびに
+    選択や一覧を消さない)。 */
 export function notify(s: State, n: Notice): Step {
 	switch (n.type) {
 		case '地図の本人が変わった':
@@ -417,5 +460,13 @@ export function notify(s: State, n: Notice): Step {
 				: only(s);
 		case '変更の流れをつなぎ直した':
 			return s.kind === 'ログイン済み' && n.as === s.me.id ? refreshTo(s, s.screen) : only(s);
+		case '権限が変わった':
+			if (s.kind === 'ログイン済み' && changedPermission(s.me, n.me)) {
+				const next = withPermission(s, n.me);
+				return refreshTo(next, next.screen);
+			}
+			if (s.kind === 'ログアウト中' && changedPermission(s.from.me, n.me))
+				return only({ ...s, from: withPermission(s.from, n.me) });
+			return only(s);
 	}
 }

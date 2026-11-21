@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PbfReader } from 'pbf';
 import pg from 'pg';
 import { extent, seedFeatures, seedPassword } from '../../db/seed.ts';
+import type { Me } from '#lib/domain.ts';
 
 export const roles = ['admin', 'a-staff', 'b-staff', 'viewer'] as const;
 export type Role = (typeof roles)[number];
@@ -218,6 +219,13 @@ export const countFeaturesWithKey = async (key: string) =>
 export const readPermissions = async (): Promise<unknown> =>
 	(await adminQuery('select email, role, "canEdit" from "user" order by email')).rows;
 
+export const readMe = async (user: User): Promise<Me> =>
+	(
+		await adminQuery('select id, name, role, "canEdit" from "user" where email = $1', [
+			`${user}@example.com`
+		])
+	).rows[0];
+
 const noteLines = (loaded: Loaded) => String(loaded.properties.note ?? '').split('\n');
 
 export const applyEdit = (loaded: Loaded, editor: string): Loaded => ({
@@ -288,6 +296,7 @@ export const subscribe = async (user: User, as?: string | null) => {
 	const controller = new AbortController();
 	const res = await browser.request('/api/events', { signal: controller.signal, as });
 	const changes: Change[] = [];
+	const permissions: Me[] = [];
 	if (res.ok && res.body) {
 		const body = res.body;
 		void (async () => {
@@ -300,20 +309,27 @@ export const subscribe = async (user: User, as?: string | null) => {
 				for (const line of events.flatMap((e) => e.split('\n')))
 					if (line.startsWith('data: ')) {
 						const c = JSON.parse(line.slice('data: '.length));
-						changes.push({ id: String(c.id), version: c.version, key: c.key });
+						if (c.me) permissions.push(c.me);
+						else changes.push({ id: String(c.id), version: c.version, key: c.key });
 					}
 			}
 		})().catch(() => {});
 	} else await res.body?.cancel();
+	const waitFor = async (received: () => boolean, description: string, timeoutMs: number) => {
+		for (const end = Date.now() + timeoutMs; Date.now() < end;) {
+			if (received()) return;
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		throw new Error(`${user} に ${description} が ${timeoutMs}ms 以内に届かなかった`);
+	};
 	return {
 		status: res.status,
 		changes,
-		async until(key: string, timeoutMs = 5_000) {
-			for (const end = Date.now() + timeoutMs; Date.now() < end;)
-				if (changes.some((c) => c.key === key)) return;
-				else await new Promise((r) => setTimeout(r, 20));
-			throw new Error(`${user} に、キー ${key} の変更が ${timeoutMs}ms 以内に届かなかった`);
-		},
+		permissions,
+		until: (key: string, timeoutMs = 5_000) =>
+			waitFor(() => changes.some((c) => c.key === key), `キー ${key} の変更`, timeoutMs),
+		untilPermission: (count: number, timeoutMs = 3_000) =>
+			waitFor(() => permissions.length >= count, `${count}件目の権限の知らせ`, timeoutMs),
 		close: () => controller.abort()
 	};
 };

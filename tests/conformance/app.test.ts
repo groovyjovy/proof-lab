@@ -55,6 +55,7 @@ const change = fc.record({
 	as: fc.constantFrom('u-admin', 'u-a')
 });
 const changed = change.map((change): Event => ({ notice: { type: '地物が変わった', change } }));
+const permissionChanged = me.map((me): Event => ({ notice: { type: '権限が変わった', me } }));
 const resumed = fc
 	.constantFrom('u-admin', 'u-a')
 	.map((as): Event => ({ notice: { type: '変更の流れをつなぎ直した', as } }));
@@ -153,6 +154,25 @@ const drawAndCommit = fc
 		...points.map((at): Event => ({ op: { type: '地図をクリック', at, feature: null } })),
 		{ op: { type: '確定' } }
 	]);
+const editAndRetryAfterRevoke = fc.tuple(me, edit).map(([user, loaded]): Event[] => {
+	const editor = { ...user, role: 'admin' as const, canEdit: true };
+	return [
+		{ op: { type: 'ログアウトを押す' } },
+		{ reply: { type: 'ログアウト完了' } },
+		{ op: { type: 'ログインを押す', email: 'admin@example.com' } },
+		{ reply: { type: 'ログイン成功', me: editor } },
+		{ notice: { type: '権限が変わった', me: editor } },
+		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref: loaded.ref, properties: {} } } },
+		{ op: { type: '編集を始める' } },
+		{ reply: { type: '読み込めた', edit: loaded } },
+		{ op: { type: '名前を変える', name: '編集後' } },
+		{ op: { type: '編集を保存', key: 'u1' } },
+		{ reply: { type: '保存結果不明' } },
+		{ notice: { type: '権限が変わった', me: { ...editor, canEdit: false } } },
+		{ op: { type: '再送' } },
+		{ reply: { type: '保存失敗' } }
+	];
+});
 const events = fc
 	.array(
 		fc.oneof(
@@ -164,6 +184,8 @@ const events = fc
 			},
 			{ arbitrary: moved.map((e) => [e]), weight: 2 },
 			{ arbitrary: changed.map((e) => [e]), weight: 2 },
+			{ arbitrary: permissionChanged.map((e) => [e]), weight: 2 },
+			{ arbitrary: editAndRetryAfterRevoke, weight: 1 },
 			{ arbitrary: resumed.map((e) => [e]), weight: 1 },
 			{ arbitrary: editWithChanges, weight: 2 },
 			{ arbitrary: searched.map((e) => [e]), weight: 2 },
@@ -259,6 +281,25 @@ function changeCoverage(before: State, e: Event, after: State | undefined, seen:
 	if (v.kind === '編集中' && w.kind === '編集中' && w.stale && !v.stale) seen.add('警告した');
 }
 
+function permissionCoverage(before: State, e: Event, after: State | undefined, seen: Set<string>) {
+	if (!('notice' in e) || e.notice.type !== '権限が変わった') return;
+	const me =
+		before.kind === 'ログアウト中'
+			? before.from.me
+			: before.kind === 'ログイン済み'
+				? before.me
+				: null;
+	if (!me) return void seen.add('ログインしていないときに届いた');
+	if (me.id !== e.notice.me.id) return void seen.add('別の人の知らせを捨てた');
+	const current =
+		after?.kind === 'ログアウト中'
+			? after.from.me
+			: after?.kind === 'ログイン済み'
+				? after.me
+				: null;
+	seen.add(JSON.stringify(me) === JSON.stringify(current) ? '同じ権限' : '本人の権限を差し替えた');
+}
+
 const kindOf = (s: State) =>
 	s.kind === 'ログイン済み'
 		? `${s.kind}/${s.screen.kind}`
@@ -270,6 +311,7 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 	const visited = new Set<string>();
 	const searchSeen = new Set<string>();
 	const changeSeen = new Set<string>();
+	const permissionSeen = new Set<string>();
 	await fc.assert(
 		fc.asyncProperty(fc.option(me), events, async (start, es) => {
 			const expected = normalize(await oracle.ask({ me: start, events: es }));
@@ -280,6 +322,7 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 				const after = actual.steps[i]?.state;
 				searchCoverage(state, e, after, searchSeen);
 				changeCoverage(state, e, after, changeSeen);
+				permissionCoverage(state, e, after, permissionSeen);
 				if (after) state = after;
 			});
 			for (const s of actual.steps) if (s) visited.add(kindOf(s.state));
@@ -292,6 +335,12 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 		'結果不明を成功にした',
 		'警告した'
 	]);
+	reached('権限の知らせ', permissionSeen, [
+		'ログインしていないときに届いた',
+		'別の人の知らせを捨てた',
+		'同じ権限',
+		'本人の権限を差し替えた'
+	]);
 	reached('検索の応答', searchSeen, [
 		'ログインしていないときに届いた',
 		'古い応答を捨てた',
@@ -301,7 +350,7 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 		'一覧: 本人が変わった'
 	]);
 	const loggedIn = ['閲覧', '描画中', '保存中', '再送中', '結果不明'];
-	const editing = ['読込中', '編集中', '更新中', '更新結果不明', '競合'];
+	const editing = ['読込中', '編集中', '更新中', '更新の再送中', '更新結果不明', '競合'];
 	const loggingOut = ['閲覧', '描画中', '結果不明', '編集中', '更新結果不明', '競合'];
 	reached('画面の状態', visited, [
 		'未ログイン',

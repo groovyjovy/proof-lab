@@ -36,9 +36,26 @@ const out = join(
 );
 await mkdir(out, { recursive: true });
 let stopServer = () => {};
+let permissionSwitch: ReturnType<typeof setInterval> | undefined;
+let permissionChange = Promise.resolve();
+const permissionLog: { at: number; changed: unknown }[] = [];
 
 try {
 	stopServer = await startDevServer(origin.origin, { port: upstream.port, quiet: true });
+	permissionSwitch = setInterval(() => {
+		permissionChange = permissionChange
+			.then(async () => {
+				const { rows } = await admin.query(
+					`update "user" set "canEdit" = not "canEdit" where role in ('a-staff', 'b-staff')
+					 returning role, "canEdit"`
+				);
+				permissionLog.push({ at: Date.now(), changed: rows });
+			})
+			.catch((error) => {
+				console.error('探索中に編集権限を切り替えられなかった', error);
+				process.exitCode = 1;
+			});
+	}, 15_000);
 
 	const bombadil = spawn(
 		'node_modules/.bin/bombadil',
@@ -56,10 +73,16 @@ try {
 		{ stdio: 'inherit' }
 	);
 	const exitCode = await new Promise<number>((r) => bombadil.on('exit', (code) => r(code ?? 1)));
+	clearInterval(permissionSwitch);
+	await permissionChange;
 	// プロキシの記録(どの要求にどの障害を起こしたか、検索をいつ送りいつ返したか)。トレースと時刻で突き合わせて読む
 	await writeFile(
 		join(out, 'proxy.json'),
-		JSON.stringify({ requests: proxy.log, searches: proxy.searches }, null, 1)
+		JSON.stringify(
+			{ requests: proxy.log, searches: proxy.searches, permissions: permissionLog },
+			null,
+			1
+		)
 	);
 	const trace = join(out, 'trace.jsonl');
 	if (
@@ -78,6 +101,11 @@ try {
 			entry.snapshots.find((s: { name: string | null }) => s.name === name)?.value;
 		const kind = [snapshot('panel')?.app, snapshot('panel')?.screen].filter(Boolean).join('/');
 		observed.set(kind, (observed.get(kind) ?? 0) + 1);
+		const p = snapshot('panel');
+		if (['a-staff', 'b-staff'].includes(p?.role) && p.canEdit === false) {
+			const scene = p.screen === '描画中' ? '編集中の下書きが編集不可' : '市職員が編集不可';
+			observed.set(scene, (observed.get(scene) ?? 0) + 1);
+		}
 		if (snapshot('panel')?.identityChanged)
 			observed.set('本人違いで止めた', (observed.get('本人違いで止めた') ?? 0) + 1);
 		if (snapshot('panel')?.stale)
@@ -160,6 +188,7 @@ try {
 		'ログイン済み/編集中',
 		'ログイン済み/更新中',
 		'ログイン済み/更新結果不明',
+		'ログイン済み/更新の再送中',
 		'ログイン済み/競合',
 		...['admin', 'a-staff', 'b-staff', 'viewer'].map((role) => `ポップアップ/${role}`),
 		'編集中(ほかの人の更新)',
@@ -167,7 +196,9 @@ try {
 		'一覧/検索中',
 		'一覧/見つかった',
 		'追い越された検索の応答',
-		'別の本人の検索のあとに届いた応答'
+		'別の本人の検索のあとに届いた応答',
+		'市職員が編集不可',
+		'編集中の下書きが編集不可'
 	].filter((k) => (observed.get(k) ?? 0) < minObserved);
 	if (unreached.length)
 		console.log(
@@ -177,8 +208,11 @@ try {
 	if (rows[0].duplicated) console.log('P10 が破れた: 同じ形の地物が二重にできた');
 	if (rows[0].untracked) console.log('P12 が破れた: 版とキーの数が合わない地物がある');
 	console.log(`\n記録: ${out}(トレース・スクリーンショット・プロキシの記録)`);
-	process.exitCode = exitCode || rows[0].duplicated || rows[0].untracked ? 1 : 0;
+	process.exitCode =
+		process.exitCode || exitCode || rows[0].duplicated || rows[0].untracked ? 1 : 0;
 } finally {
+	clearInterval(permissionSwitch);
+	await permissionChange;
 	stopServer();
 	proxy.close();
 	await restoreSeed(admin);

@@ -13,6 +13,7 @@ const panel = extract((s) => {
 				app: p.getAttribute('data-app'),
 				screen: p.getAttribute('data-screen'),
 				role: p.getAttribute('data-role'),
+				canEdit: p.getAttribute('data-can-edit') === 'true',
 				key: p.getAttribute('data-draft-key'),
 				points: Number(p.getAttribute('data-draft-points') ?? 0),
 				buttons: [...p.querySelectorAll('button')].map((b) => ({
@@ -93,9 +94,10 @@ const zoomButtons = extract((s) =>
 
 const saving = () => panel.current?.screen === '保存中' || panel.current?.screen === '再送中';
 const busy = () =>
-	['保存中', '再送中', '読込中', '更新中'].includes(panel.current?.screen ?? '') &&
+	['保存中', '再送中', '読込中', '更新中', '更新の再送中'].includes(panel.current?.screen ?? '') &&
 	panel.current?.app === 'ログイン済み';
-const role = () => panel.current?.role ?? null;
+// 認可の表示を確かめる性質は、画面に届いた最新の権限で判断する。
+const displayedRole = () => panel.current?.role ?? null;
 const enabled = (text: string) =>
 	panel.current?.buttons.some((b) => b.text.startsWith(text) && !b.disabled) ?? false;
 
@@ -191,22 +193,30 @@ export const ログアウト中は何も押せない = always(
 	() => panel.current?.app !== 'ログアウト中' || panel.current.buttons.every((b) => b.disabled)
 );
 
-export const 閲覧者は描けない = always(() => role() !== 'viewer' || !enabled('ポリゴンを描く'));
+export const 閲覧者は描けない = always(
+	() => displayedRole() !== 'viewer' || !enabled('ポリゴンを描く')
+);
+
+export const P15_編集不可では新しい保存を送れない = always(
+	() =>
+		panel.current?.canEdit !== false ||
+		!['ポリゴンを描く', '確定して保存', '保存する'].some(enabled)
+);
 
 export const 市を選べるのは管理者だけ = always(
-	() => role() === 'admin' || !panel.current?.citySelectEnabled
+	() => displayedRole() === 'admin' || !panel.current?.citySelectEnabled
 );
 
 const cityOfStaff: Record<string, string> = { 'a-staff': 'A', 'b-staff': 'B' };
 
 export const P1_市職員には自分の市の地物だけが出る = always(() => {
-	const city = cityOfStaff[role() ?? ''];
+	const city = cityOfStaff[displayedRole() ?? ''];
 	return !city || !popup.current || popup.current['市'] === city;
 });
 
 export const P2_P7_閲覧者には公開の地物だけが出て所有者名は出ない = always(
 	() =>
-		role() !== 'viewer' ||
+		displayedRole() !== 'viewer' ||
 		!popup.current ||
 		(!('所有者名' in popup.current) && popup.current['公開'] === 'true')
 );
@@ -216,7 +226,7 @@ const readable = (role: string, hit: { city: string | null; public: boolean }) =
 	role === 'admin' || (role === 'viewer' && hit.public) || hit.city === cityOfStaff[role];
 
 export const P13_一覧には今の本人が読める地物だけが出る = always(() => {
-	const r = role();
+	const r = displayedRole();
 	return !r || !listing.current || listing.current.hits.every((h) => readable(r, h));
 });
 

@@ -76,12 +76,31 @@ const scenarios: Record<string, { draws: boolean; run: (c: Context) => Promise<v
 			const admin = await openApp(c.browser, origin);
 			await admin.login('admin');
 			console.log('管理者が編集権限を剥奪した:', await admin.revokeEditPermission(c.role));
-			console.log('剥奪後の保存:', await c.app.save());
-			await c.app.page.getByText('保存できませんでした').waitFor();
-			await c.shot('保存失敗');
-			await c.app.page.reload();
-			await c.app.reached('ログイン済み/閲覧');
-			await c.shot('再読み込み後');
+			await c.app.page.locator('[data-not-permitted]').waitFor();
+			await c.shot('編集不可。確定できず、下書きは残る');
+			await admin.page.close();
+		}
+	},
+	transfer: {
+		draws: false,
+		async run({ app, browser, role, shot }) {
+			if (role !== 'a-staff') throw new Error('transfer は a-staff で流す');
+			await app.login(role);
+			await app.page.locator('[data-hit-city="A"]').first().waitFor();
+			await app.openPopup(role);
+			await shot('A市のポップアップと一覧');
+			const admin = await openApp(browser, origin);
+			await admin.login('admin');
+			const search = await app.hold('/api/features/search', 'GET');
+			expect200(await admin.setRole(role, 'b-staff'));
+			await app.page.locator('[data-role="b-staff"]').waitFor();
+			await app.page.locator('.maplibregl-popup').waitFor({ state: 'detached' });
+			await shot('B市へ異動。A市のポップアップと一覧が消えた');
+			await search.release();
+			await app.page.locator('[data-search="見つかった"] [data-hit-city="B"]').first().waitFor();
+			await app.settle();
+			await shot('B市の一覧');
+			await admin.page.close();
 		}
 	},
 	'change-notice': {
@@ -182,7 +201,8 @@ async function editTour(c: Context) {
 	await logoutFailing(c);
 	const resend = await app.hold(feature, 'PUT');
 	await app.press('再送する');
-	await app.reached('ログイン済み/更新中');
+	await app.reached('ログイン済み/更新の再送中');
+	await shot();
 	await resend.release(409);
 	await app.reached('ログイン済み/競合');
 	await shot();

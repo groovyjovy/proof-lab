@@ -28,6 +28,9 @@ test('P3 剥奪後の書き込み禁止(ブラウザ): 描いている途中で�
 	const app = await open();
 	await app.login('a-staff');
 	const key = await app.drawTriangle();
+	const pending = await app.hold('/api/features');
+	await app.press('確定して保存');
+	await app.reached('ログイン済み/保存中');
 	const admin = await open();
 	await admin.login('admin');
 	expect(await admin.revokeEditPermission('a-staff')).toBe(200);
@@ -38,12 +41,16 @@ test('P3 剥奪後の書き込み禁止(ブラウザ): 描いている途中で�
 		)
 		.toBe(true);
 
-	expect(await app.save()).toBe(403);
+	const rejected = app.page.waitForResponse(
+		(r) => new URL(r.url()).pathname === '/api/features' && r.request().method() === 'POST'
+	);
+	await pending.release();
+	expect((await rejected).status()).toBe(403);
 	await app.page.getByText('保存できませんでした').waitFor();
 	expect(await countFeaturesWithKey(key)).toBe(0);
 	expect(await app.kind()).toBe('ログイン済み/描画中');
 	expect(await app.draftKey()).toBe(key);
-	expect(await app.header()).not.toContain('編集不可');
+	await app.page.getByText('A市職員(a-staff・編集不可)', { exact: true }).waitFor();
 
 	await app.page.reload();
 	await app.reached('ログイン済み/閲覧');

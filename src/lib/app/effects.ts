@@ -1,5 +1,5 @@
 import { authClient } from '#lib/auth-client.ts';
-import { roleOf, type City, type Me } from '#lib/domain.ts';
+import { roleOf, roles, type City, type Me } from '#lib/domain.ts';
 import type { Draft, Edit, Effect, Hit, Notice, Query, Reply, SearchResult } from './machine.ts';
 
 export const saveTimeoutMs = 10_000;
@@ -224,9 +224,7 @@ export function subscribeChanges(as: string, deliver: (n: Notice) => void): () =
 				if (!res.ok || !res.body) throw new Error(`変更の流れ: ${res.status}`);
 				if (connected++ > 0) deliver({ type: '変更の流れをつなぎ直した', as });
 				delay = reconnectMs.first;
-				await readChanges(res.body, (change) =>
-					deliver({ type: '地物が変わった', change: { ...change, as } })
-				);
+				await readChanges(res.body, as, deliver);
 			} catch {
 				if (controller.signal.aborted) return;
 			}
@@ -240,7 +238,8 @@ export function subscribeChanges(as: string, deliver: (n: Notice) => void): () =
 /** Server-Sent Events の `data:` 行を1つずつ読む。形の違うものは捨てる。 */
 async function readChanges(
 	body: ReadableStream<Uint8Array>,
-	onChange: (c: { id: number; version: number; key: string }) => void
+	as: string,
+	deliver: (notice: Notice) => void
 ) {
 	const decoder = new TextDecoder();
 	let buffer = '';
@@ -253,8 +252,27 @@ async function readChanges(
 				if (!line.startsWith('data: ')) continue;
 				try {
 					const v = JSON.parse(line.slice('data: '.length));
-					if (Number.isInteger(v.id) && Number.isInteger(v.version) && typeof v.key === 'string')
-						onChange({ id: v.id, version: v.version, key: v.key });
+					const me = v.me;
+					const role = roles.find((role) => role === me?.role);
+					if (
+						me?.id === as &&
+						typeof me.name === 'string' &&
+						role &&
+						typeof me.canEdit === 'boolean'
+					)
+						deliver({
+							type: '権限が変わった',
+							me: { id: as, name: me.name, role, canEdit: me.canEdit }
+						});
+					else if (
+						Number.isInteger(v.id) &&
+						Number.isInteger(v.version) &&
+						typeof v.key === 'string'
+					)
+						deliver({
+							type: '地物が変わった',
+							change: { id: v.id, version: v.version, key: v.key, as }
+						});
 				} catch {
 					// 形の違う行は捨てる
 				}

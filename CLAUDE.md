@@ -3,6 +3,8 @@
 目的と進め方は [goal.md](goal.md)、機能の一覧は [docs/feature-map.md](docs/feature-map.md)。
 機能を足す・直すときの手順は、スキル [research-flow](.claude/skills/research-flow/SKILL.md) にまとめた(事例研究の流れ、わざと壊した版、見つけたものの扱い、記録の一覧、報告の形)。
 
+このファイルは Claude Code と Codex で共用する(`AGENTS.md` はこのファイルへのリンク)。スキルの本体は `.claude/skills/research-flow/` に1つだけ置き、Codex は `.agents/skills/research-flow`(本体へのリンク)から読む。直すときは本体を直す。
+
 ## 完了報告
 
 「できました」「直しました」には、次のどれかを添える。添えられないなら、終わっていないと書く。

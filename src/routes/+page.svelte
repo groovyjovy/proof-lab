@@ -20,7 +20,7 @@
 	} from 'svelte-maplibre-gl';
 	import { page } from '$app/state';
 	import { createApp } from '#lib/app/app.svelte.ts';
-	import type { City } from '#lib/domain.ts';
+	import { canWrite, seesOwner, type City } from '#lib/domain.ts';
 	import ActionButton from '#lib/ui/ActionButton.svelte';
 	import ActionCheckbox from '#lib/ui/ActionCheckbox.svelte';
 	import ActionSelect from '#lib/ui/ActionSelect.svelte';
@@ -180,7 +180,8 @@
 			onclose={() => actions.ポップアップを閉じる?.()}
 		>
 			<dl class="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-				{#each Object.entries(screen.selected.properties) as [key, value] (key)}
+				<!-- 権限が変わった直後は、古いタイルの属性が残っていることがある。所有者名は今の権限で見えるときだけ出す(P15) -->
+				{#each Object.entries(screen.selected.properties).filter(([key]) => key !== 'owner_name' || (session && seesOwner(session.me))) as [key, value] (key)}
 					<dt class="text-gray-500">{labels[key] ?? key}</dt>
 					<dd>{String(value)}</dd>
 				{/each}
@@ -224,8 +225,11 @@
 		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
 		data-app={app.kind}
 		data-screen={session.screen.kind}
-		data-update-applied={session.screen.kind === '更新中' ? session.screen.applied : undefined}
+		data-update-applied={session.screen.kind === '更新中' || session.screen.kind === '更新の再送中'
+			? session.screen.applied
+			: undefined}
 		data-role={session.me.role}
+		data-can-edit={session.me.canEdit}
 		data-draft-key={draft?.key}
 		data-draft-points={draft?.points.length}
 	>
@@ -282,6 +286,11 @@
 			{#if session.screen.notice === '保存失敗'}
 				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
 			{/if}
+			{#if !canWrite(session.me, d)}
+				<p class="text-red-600" data-not-permitted>
+					今の権限では、この下書きを保存できません(権限が変わりました)。
+				</p>
+			{/if}
 		{:else if session.screen.kind === '編集中'}
 			{@const e = session.screen.edit}
 			<p>地物 {e.ref.id} を編集(版 {e.version})</p>
@@ -303,6 +312,11 @@
 			</div>
 			{#if session.screen.notice === '更新失敗'}
 				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
+			{/if}
+			{#if !canWrite(session.me, e.ref)}
+				<p class="text-red-600" data-not-permitted>
+					今の権限では、この地物を保存できません(権限が変わりました)。
+				</p>
 			{/if}
 			{#if session.screen.stale}
 				<div class="space-y-1 rounded bg-amber-50 p-2" data-stale>
@@ -328,7 +342,9 @@
 				<ActionButton class="rounded border px-3 py-1.5" action={actions.取消}>やめる</ActionButton>
 			</div>
 			{#if session.screen.notice === '再送失敗'}
-				<p class="text-red-600">再送できませんでした(権限がない可能性があります)</p>
+				<p class="text-red-600">
+					再送を受け付けてもらえませんでした(権限が変わった可能性があります)。前に送った更新が効いたかは分かりません。やめると、地図に今の状態が出ます。
+				</p>
 			{/if}
 		{:else if session.screen.kind === '競合'}
 			{@const e = session.screen.edit}
