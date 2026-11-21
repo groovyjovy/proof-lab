@@ -8,6 +8,7 @@ import {
 	type Notice,
 	type State
 } from '#lib/app/machine.ts';
+import { readFileSync } from 'node:fs';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
@@ -349,7 +350,9 @@ test('モデル3(検索) 実装の receive・notify: 応答の順序が入れ替
 		return failed.size === 0;
 	});
 	expect({ result, failed: [...failed] }).toMatchObject({ result: { ok: true }, failed: [] });
-	expect(result.states).toBeGreaterThan(400_000);
+	expect(result.states, 'docs/model-checking.md に書いた数').toBe(
+		documentedStates('モデル3(検索)')
+	);
 	expect([...seen].sort()).toEqual(
 		[
 			'一覧を出したまま検索中',
@@ -442,3 +445,17 @@ test('モデル3(検索) 対照: 前の本人の検索への 412 を信じると
 		'検索0の応答(本人が変わった)が届く'
 	]);
 });
+
+/** docs/model-checking.md の結果の一覧に書いた、その範囲の全状態数。 */
+function documentedStates(row: string) {
+	const line = readFileSync('docs/model-checking.md', 'utf8')
+		.split('\n')
+		.find((l) => l.startsWith(`| ${row} |`) && l.includes('| 成立 |'));
+	if (!line) throw new Error(`docs/model-checking.md の結果の一覧に「${row}」の行がない`);
+	return Number(line.split('|').at(-2)!.trim().replaceAll(',', ''));
+}
+
+test('docs/model-checking.md に書いた作成・編集の範囲の状態数は、今の全探索の数と同じ', () => {
+	expect(check(m3.init, m3.steps, () => true).states).toBe(documentedStates('モデル3'));
+	expect(check(m3.init, m3.editSteps, () => true).states).toBe(documentedStates('モデル3(編集)'));
+}, 60_000);

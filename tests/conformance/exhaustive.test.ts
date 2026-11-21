@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import type { Me } from '#lib/domain.ts';
 import type { Area, State } from '#lib/app/machine.ts';
@@ -110,4 +111,9 @@ test('範囲内の網羅: モデル3(作成・編集・検索)がたどる画面
 	});
 	// 作成・編集の範囲と検索の範囲で重なる状態(ログイン前後の閲覧など)は1つに数える
 	expect(states.size).toBe(2075);
+	// docs/proofs.md に書いた数が、今の数と同じか(状態機械を変えて書き直し忘れると落ちる)
+	const n = (x: number) => x.toLocaleString('en-US');
+	expect(readFileSync('docs/proofs.md', 'utf8')).toContain(
+		`重複なしで ${n(states.size)})のすべてに、すべての種類の操作・応答・知らせ(${branches.length}種類)を1つずつ当て、${n(states.size * branches.length)} 通り`
+	);
 }, 120_000);
