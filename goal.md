@@ -5,7 +5,10 @@
 ## 0. 指針(経典)
 
 このプロジェクトは、Lauren Tan(poteto)の講演 "All Code Is Slop Except Mine" と
-pstack の考え方に従って進める。迷ったらこの章に戻る。
+pstack の考え方を参考にする。迷ったらこの章に戻る。
+
+2026-11-21 に方針をはっきりさせた。研究の軸は状態機械と形式証明の力を知ることで、pstack は技術の使い方の参考にとどめる(従うことは必須ではない)。
+一方で、アプリの堅牢さを示す道具(状態機械、Lean の証明、lint、テスト)は手を抜かない。応急処置で済ませず、根本から直す。
 
 ### 0.1 逆さの信頼ピラミッド
 
@@ -72,7 +75,7 @@ pstack の考え方に従って進める。迷ったらこの章に戻る。
 | モデル検査 | 自作の検査器(付録A)→ TLA+ | |
 | 形式証明 | Lean 4(v4.35.0。Mathlib なし) | 仕様と証明は `spec/`。実装とは差分テストで突き合わせる(`docs/proofs.md`) |
 | 静的解析 | ESLint(カスタムルール含む)、dependency-cruiser、TypeScript strict | |
-| エージェント | Claude Code + pstack-claude(pstackのClaude Code移植版) | |
+| エージェント | Claude Code | pstack は参考にとどめる(0章) |
 
 ### 3.1 ユーザーとロール
 
@@ -262,7 +265,7 @@ API名は実装時に公式ドキュメントで確認する。
 - 副作用と関係なく届く知らせ(`Notice`)を、応答とは別の種類にする。知らせは、どの状態でも受け取る(型が `Option` ではない)
 
 未決:
-- pstack-claude の導入と、どのプレイブック(Feature / Bug fix など)を使うか
+- Phase 5 の進め方(pstack-claude は入れない。0章)
 
 ---
 
