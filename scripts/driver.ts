@@ -133,9 +133,15 @@ export const driver = (page: Page) => {
 
 		hold: (path: string | RegExp, method = 'POST') => hold(page, path, method),
 
+		/** 地図と一覧が落ち着くまで待つ。変更の流れ(P14)はつながったままなので、通信が止まる
+		    (networkidle)のは待てない。一覧の検索が終わるのを待ち、タイルの描画を少し待つ。 */
 		async settle() {
-			await page.waitForLoadState('networkidle').catch(() => {});
-			await page.waitForTimeout(500);
+			await page
+				.locator('[data-search]:not([data-search="検索中"])')
+				.first()
+				.waitFor({ timeout: 5_000 })
+				.catch(() => {});
+			await page.waitForTimeout(800);
 		}
 	};
 	return app;

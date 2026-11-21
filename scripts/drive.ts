@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import pg from 'pg';
 import { chromium, type Browser } from 'playwright-core';
-import { restoreSeed } from '../db/seed.ts';
+import { restoreSeed, seedFeatures } from '../db/seed.ts';
 import { stateDiagram } from '../model/state-diagram.ts';
 import { startDevServer } from './dev-server.ts';
 import { openApp, roles, userOf, type App, type Role } from './driver.ts';
@@ -82,6 +82,30 @@ const scenarios: Record<string, { draws: boolean; run: (c: Context) => Promise<v
 			await c.app.page.reload();
 			await c.app.reached('ログイン済み/閲覧');
 			await c.shot('再読み込み後');
+		}
+	},
+	'change-notice': {
+		draws: false,
+		async run(c) {
+			const { app, shot } = c;
+			const target = seedFeatures.find((f) => f.city === 'A' && f.geometry.type === 'Point')!;
+			if (c.role !== 'admin' && c.role !== 'a-staff')
+				throw new Error('change-notice は、A市の地物を編集できるロール(admin・a-staff)で流す');
+			await app.login(c.role);
+			await app.openFeature(target.id);
+			await app.press('編集を始める');
+			await app.reached('ログイン済み/編集中');
+			await app.fill('備考', '編集している途中の備考');
+			await shot('編集中');
+			const other = await openApp(c.browser, origin);
+			await other.login(c.role === 'admin' ? 'a-staff' : 'admin');
+			await other.openFeature(target.id);
+			await other.press('編集を始める');
+			await other.reached('ログイン済み/編集中');
+			await other.fill('名前', 'ほかの人が直した名前');
+			expect200(await other.save('保存する'));
+			await app.page.locator('[data-stale]').waitFor();
+			await shot('ほかの人が更新した。打った備考は残っている');
 		}
 	},
 	search: {

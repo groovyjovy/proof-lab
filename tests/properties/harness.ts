@@ -46,13 +46,16 @@ const adminQuery = (sql: string, params: unknown[] = []) =>
 
 /** 画面と同じく、データの要求には「誰として」(`as`)を書く(P11)。 */
 const boundToActor = (path: string) =>
-	path.startsWith('/api/features') || path.startsWith('/tiles/');
+	path.startsWith('/api/features') || path.startsWith('/tiles/') || path.startsWith('/api/events');
 
 class Browser {
 	#cookies = new Map<string, string>();
 	actorId: string | undefined;
 
-	async request(path: string, init: { method?: string; body?: unknown; as?: string | null } = {}) {
+	async request(
+		path: string,
+		init: { method?: string; body?: unknown; as?: string | null; signal?: AbortSignal } = {}
+	) {
 		const as = init.as === undefined ? this.actorId : init.as;
 		if (boundToActor(path) && as !== null && as !== undefined)
 			path += `${path.includes('?') ? '&' : '?'}as=${encodeURIComponent(as)}`;
@@ -64,7 +67,8 @@ class Browser {
 			method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
 			headers,
 			body: init.body === undefined ? undefined : JSON.stringify(init.body),
-			redirect: 'manual'
+			redirect: 'manual',
+			signal: init.signal
 		});
 		for (const setCookie of res.headers.getSetCookie()) {
 			const [pair, ...attributes] = setCookie.split(';');
@@ -271,4 +275,45 @@ export const updateRecord = async (id: string) => {
 		[id]
 	);
 	return rows[0] as { version: number; keys: number };
+};
+
+export type Change = { id: string; version: number; key: string };
+
+/**
+ * 変更の流れ(P14)を本人として開き、届いた変更をためる。`until` は、あるキーの変更が届くまで待つ。
+ * サーバーは、届いた順に1つずつ確かめて流すので、あるキーが届いたら、それより前の変更はもう判断済み。
+ */
+export const subscribe = async (user: User, as?: string | null) => {
+	const browser = await signIn(user);
+	const controller = new AbortController();
+	const res = await browser.request('/api/events', { signal: controller.signal, as });
+	const changes: Change[] = [];
+	if (res.ok && res.body) {
+		const body = res.body;
+		void (async () => {
+			const decoder = new TextDecoder();
+			let buffer = '';
+			for await (const chunk of body) {
+				buffer += decoder.decode(chunk, { stream: true });
+				const events = buffer.split('\n\n');
+				buffer = events.pop() ?? '';
+				for (const line of events.flatMap((e) => e.split('\n')))
+					if (line.startsWith('data: ')) {
+						const c = JSON.parse(line.slice('data: '.length));
+						changes.push({ id: String(c.id), version: c.version, key: c.key });
+					}
+			}
+		})().catch(() => {});
+	} else await res.body?.cancel();
+	return {
+		status: res.status,
+		changes,
+		async until(key: string, timeoutMs = 5_000) {
+			for (const end = Date.now() + timeoutMs; Date.now() < end;)
+				if (changes.some((c) => c.key === key)) return;
+				else await new Promise((r) => setTimeout(r, 20));
+			throw new Error(`${user} に、キー ${key} の変更が ${timeoutMs}ms 以内に届かなかった`);
+		},
+		close: () => controller.abort()
+	};
 };

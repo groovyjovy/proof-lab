@@ -10,6 +10,7 @@ export const faults = [
 	'応答が来ない',
 	'ほかの人の更新が割り込む',
 	'読み込みが遅れる',
+	'読み込んだあとにほかの人の更新が割り込む',
 	'検索の応答が遅れる'
 ] as const;
 export type Fault = (typeof faults)[number];
@@ -98,6 +99,16 @@ export function startProxy(port: number, upstream: URL, interfere: (id: number) 
 		if (req.method === 'GET' && one && Math.random() < 0.5) {
 			counts.set('読み込みが遅れる', (counts.get('読み込みが遅れる') ?? 0) + 1);
 			return void setTimeout(() => forward(req, res), 500 + Math.random() * 1500);
+		}
+		if (req.method === 'GET' && one && Math.random() < 0.4) {
+			// 画面が編集を始めたあとに、ほかの人の更新が効く(変更の流れで、編集中の画面に警告が届く。P14)
+			const fault = '読み込んだあとにほかの人の更新が割り込む';
+			counts.set(fault, (counts.get(fault) ?? 0) + 1);
+			return forward(req, res, (up) => {
+				res.writeHead(up.statusCode ?? 502, up.headers);
+				up.pipe(res);
+				up.on('end', () => setTimeout(() => void interfere(Number(one[1])), 300));
+			});
 		}
 		const creating = req.method === 'POST' && path === '/api/features';
 		const updating = req.method === 'PUT' && one !== null;

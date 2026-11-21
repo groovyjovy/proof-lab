@@ -36,7 +36,7 @@ function documented() {
 
 test('性質を表す定理は、どれも Lean の標準の公理だけに依存する(sorry や native_decide を使っていない)', () => {
 	const axioms = printedAxioms();
-	expect(axioms.size).toBe(33);
+	expect(axioms.size).toBe(38);
 	for (const [name, used] of axioms)
 		expect(
 			used.filter((a) => !standard.has(a)),

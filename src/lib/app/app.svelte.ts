@@ -1,6 +1,6 @@
 import { onMount } from 'svelte';
 import type { Me } from '#lib/domain.ts';
-import { run } from './effects.ts';
+import { run, subscribeChanges } from './effects.ts';
 import {
 	init,
 	notify,
@@ -38,6 +38,22 @@ export function createApp(me: Me | null) {
 	}
 
 	const actions = $derived(interactive ? bind(offers(state), apply) : {});
+
+	// 変更の流れ(P14)は、ログインしている本人として開く。本人が変われば閉じて開き直す。
+	// 前の本人の流れから遅れて届いた知らせは、状態機械が捨てる(`as` が今の本人と違う)
+	const streamAs = $derived(
+		!interactive
+			? null
+			: state.kind === 'ログイン済み'
+				? state.me.id
+				: state.kind === 'ログアウト中'
+					? state.from.me.id
+					: null
+	);
+	$effect(() => {
+		const as = streamAs;
+		if (as) return subscribeChanges(as, (n) => apply(notify(state, n)));
+	});
 
 	return {
 		get state() {

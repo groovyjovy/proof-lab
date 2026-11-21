@@ -48,6 +48,16 @@ const searchResult = fc.oneof(
 	fc.array(hit, { maxLength: 2 }).map((hits): SearchResult => ({ type: '見つかった', hits })),
 	fc.constantFrom<SearchResult>({ type: '検索できない' }, { type: '本人が変わった' })
 );
+const change = fc.record({
+	id: fc.constantFrom(1, 2),
+	version: fc.nat(3),
+	key: fc.constantFrom('u1', 'u2', 'k1', 'other'),
+	as: fc.constantFrom('u-admin', 'u-a')
+});
+const changed = change.map((change): Event => ({ notice: { type: '地物が変わった', change } }));
+const resumed = fc
+	.constantFrom('u-admin', 'u-a')
+	.map((as): Event => ({ notice: { type: '変更の流れをつなぎ直した', as } }));
 const searched = fc
 	.tuple(fc.nat(4), searchResult)
 	.map(([seq, result]): Event => ({ reply: { type: '検索の応答', seq, result } }));
@@ -114,6 +124,28 @@ const editAndSave = fc
 		{ reply: { type: outcome } as Reply },
 		{ op: { type: 'ログアウトを押す' } }
 	]);
+// 自分の更新が効いたという知らせが、応答より先に届く。ほかの人の、より新しい版の知らせが編集中に届く
+const editWithChanges = fc
+	.tuple(ref, edit, fc.constantFrom('u-admin', 'u-a'))
+	.map(([ref, loaded, as]): Event[] => [
+		{ op: { type: '地図をクリック', at: [0, 0], feature: { ref, properties: {} } } },
+		{ op: { type: '編集を始める' } },
+		{ reply: { type: '読み込めた', edit: { ...loaded, ref } } },
+		{
+			notice: {
+				type: '地物が変わった',
+				change: { id: ref.id, version: loaded.version + 1, key: 'other', as }
+			}
+		},
+		{ op: { type: '編集を保存', key: 'u1' } },
+		{
+			notice: {
+				type: '地物が変わった',
+				change: { id: ref.id, version: loaded.version + 2, key: 'u1', as }
+			}
+		},
+		{ reply: { type: '保存結果不明' } }
+	]);
 const drawAndCommit = fc
 	.tuple(key, fc.array(at, { minLength: 3, maxLength: 4 }))
 	.map(([key, points]): Event[] => [
@@ -131,6 +163,9 @@ const events = fc
 				weight: 1
 			},
 			{ arbitrary: moved.map((e) => [e]), weight: 2 },
+			{ arbitrary: changed.map((e) => [e]), weight: 2 },
+			{ arbitrary: resumed.map((e) => [e]), weight: 1 },
+			{ arbitrary: editWithChanges, weight: 2 },
 			{ arbitrary: searched.map((e) => [e]), weight: 2 },
 			{
 				// 地図を2回動かし、応答を逆の順で返す(追い越し)
@@ -212,6 +247,18 @@ function reached(what: string, seen: Set<string>, expected: string[]) {
 	if (missed.length) console.log(`この種では届かなかった${what}(種 ${seed}):`, missed);
 }
 
+/** 変更の知らせで通ったところ(空振りの確認) */
+function changeCoverage(before: State, e: Event, after: State | undefined, seen: Set<string>) {
+	if (!('notice' in e) || e.notice.type !== '地物が変わった' || !after) return;
+	if (before.kind !== 'ログイン済み' || after.kind !== 'ログイン済み') return;
+	if (e.notice.change.as !== before.me.id) return void seen.add('前の本人の流れを捨てた');
+	const [v, w] = [before.screen, after.screen];
+	if (v.kind === '更新中' && w.kind === '更新中' && w.applied && !v.applied)
+		seen.add('効いたと覚えた');
+	if (v.kind === '更新結果不明' && w.kind === '閲覧') seen.add('結果不明を成功にした');
+	if (v.kind === '編集中' && w.kind === '編集中' && w.stale && !v.stale) seen.add('警告した');
+}
+
 const kindOf = (s: State) =>
 	s.kind === 'ログイン済み'
 		? `${s.kind}/${s.screen.kind}`
@@ -222,6 +269,7 @@ const kindOf = (s: State) =>
 test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状態・副作用・差し出す操作を返す', async () => {
 	const visited = new Set<string>();
 	const searchSeen = new Set<string>();
+	const changeSeen = new Set<string>();
 	await fc.assert(
 		fc.asyncProperty(fc.option(me), events, async (start, es) => {
 			const expected = normalize(await oracle.ask({ me: start, events: es }));
@@ -231,12 +279,19 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 			es.forEach((e, i) => {
 				const after = actual.steps[i]?.state;
 				searchCoverage(state, e, after, searchSeen);
+				changeCoverage(state, e, after, changeSeen);
 				if (after) state = after;
 			});
 			for (const s of actual.steps) if (s) visited.add(kindOf(s.state));
 		}),
 		{ numRuns: 2000 }
 	);
+	reached('変更の知らせ', changeSeen, [
+		'前の本人の流れを捨てた',
+		'効いたと覚えた',
+		'結果不明を成功にした',
+		'警告した'
+	]);
 	reached('検索の応答', searchSeen, [
 		'ログインしていないときに届いた',
 		'古い応答を捨てた',

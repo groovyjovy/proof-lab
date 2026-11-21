@@ -20,6 +20,8 @@ const panel = extract((s) => {
 					disabled: b.matches(':disabled')
 				})),
 				citySelectEnabled: p.querySelector('select:enabled') !== null,
+				stale: p.querySelector('[data-stale]') !== null,
+				applied: p.getAttribute('data-update-applied') === 'true',
 				identityChanged: p.textContent?.includes('別の利用者としてログインした') ?? false
 			}
 		: null;

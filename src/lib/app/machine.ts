@@ -15,8 +15,10 @@ export type Screen =
 	| { kind: '結果不明'; draft: Draft; notice: '再送失敗' | null }
 	| { kind: '再送中'; draft: Draft }
 	| { kind: '読込中'; ref: FeatureRef }
-	| { kind: '編集中'; edit: Edit; notice: '更新失敗' | null }
-	| { kind: '更新中'; edit: Edit; key: string }
+	/** `stale`: ほかの人がこの地物を、読み込んだときより新しい版にしたと知らされた(P14) */
+	| { kind: '編集中'; edit: Edit; notice: '更新失敗' | null; stale: boolean }
+	/** `applied`: このキーが効いたという変更の知らせが、応答より先に届いた(P14) */
+	| { kind: '更新中'; edit: Edit; key: string; applied: boolean }
 	| { kind: '更新結果不明'; edit: Edit; key: string; notice: '再送失敗' | null }
 	| { kind: '競合'; edit: Edit };
 
@@ -85,7 +87,16 @@ export type SearchResult =
 	{ type: '見つかった'; hits: Hit[] } | { type: '検索できない' } | { type: '本人が変わった' };
 
 /** 副作用とは関係なく届く知らせ。どの状態でも受け取る。 */
-export type Notice = { type: '地図の本人が変わった' } | { type: '地図が動いた'; area: Area };
+/** サーバーで地物が変わったという知らせ(変更の流れから届く)。キーは効いた要求のもの
+    (作成は request_key、更新は feature_update のキー)。`as` は変更の流れを開いた本人。 */
+export type Change = { id: number; version: number; key: string; as: string };
+
+export type Notice =
+	| { type: '地図の本人が変わった' }
+	| { type: '地図が動いた'; area: Area }
+	| { type: '地物が変わった'; change: Change }
+	/** 変更の流れが切れて、つなぎ直した。切れている間の変更は、取りこぼしたかもしれない */
+	| { type: '変更の流れをつなぎ直した'; as: string };
 
 export type Effect =
 	| { type: 'ログインする'; email: string }
@@ -180,7 +191,9 @@ function onScreen(s: LoggedIn): Offers {
 	const load = (ref: FeatureRef) =>
 		to({ kind: '読込中', ref }, [{ type: '読み込む', id: ref.id, as: s.me.id }]);
 	const update = (edit: Edit, key: string) =>
-		to({ kind: '更新中', edit, key }, [{ type: '更新する', edit, key, as: s.me.id }]);
+		to({ kind: '更新中', edit, key, applied: false }, [
+			{ type: '更新する', edit, key, as: s.me.id }
+		]);
 	const v = s.screen;
 	switch (v.kind) {
 		case '閲覧':
@@ -227,6 +240,7 @@ function onScreen(s: LoggedIn): Offers {
 				名前を変える: (op) => to({ ...v, edit: { ...e, name: op.name } }),
 				備考を変える: (op) => to({ ...v, edit: { ...e, note: op.note } }),
 				編集を保存: (op) => update(e, op.key),
+				読み直す: v.stale ? () => load(e.ref) : undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
 		}
@@ -302,7 +316,7 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 		case '読込中':
 			switch (r.type) {
 				case '読み込めた':
-					return to({ kind: '編集中', edit: r.edit, notice: null });
+					return to({ kind: '編集中', edit: r.edit, notice: null, stale: false });
 				case '読み込めない':
 					return to({ kind: '閲覧', selected: null });
 				default:
@@ -313,9 +327,12 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 				case '保存成功':
 					return refreshTo(s, { kind: '閲覧', selected: null });
 				case '保存結果不明':
-					return to({ kind: '更新結果不明', edit: v.edit, key: v.key, notice: null });
+					// 効いたという知らせが先に届いていれば、応答が分からなくても成功(P14)
+					return v.applied
+						? refreshTo(s, { kind: '閲覧', selected: null })
+						: to({ kind: '更新結果不明', edit: v.edit, key: v.key, notice: null });
 				case '保存失敗':
-					return to({ kind: '編集中', edit: v.edit, notice: '更新失敗' });
+					return to({ kind: '編集中', edit: v.edit, notice: '更新失敗', stale: false });
 				case '競合した':
 					return to({ kind: '競合', edit: v.edit });
 				default:
@@ -346,26 +363,59 @@ function onSearched(s: LoggedIn, seq: number, r: SearchResult): Step {
 export const identityChangedMessage =
 	'ほかの画面で別の利用者としてログインしたため、この画面での操作を止めました。もう一度ログインしてください';
 
+/** 地物が変わったという知らせ(P14)。地図と一覧は読み直す。応答待ちの状態は抜けない(応答を捨てない)。
+    - 更新中: 自分のキーなら、効いたと覚えておく(応答が結果不明でも成功にできる)
+    - 更新結果不明: 自分のキーなら、効いていたので成功
+    - 編集中: 編集している地物が、読み込んだときより新しい版になったら知らせる。自分の更新が戻ってきた
+      知らせは、読み込んだ版と同じなので知らせない */
+function onChanged(s: LoggedIn, c: Change): Step {
+	const v = s.screen;
+	switch (v.kind) {
+		case '更新中':
+			return c.key === v.key ? only({ ...s, screen: { ...v, applied: true } }) : refreshTo(s, v);
+		case '更新結果不明':
+			return refreshTo(s, c.key === v.key ? { kind: '閲覧', selected: null } : v);
+		case '編集中':
+			return refreshTo(
+				s,
+				c.id === v.edit.ref.id && v.edit.version < c.version ? { ...v, stale: true } : v
+			);
+		default:
+			return refreshTo(s, v);
+	}
+}
+
+/** 地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。 */
+function mapMoved(s: State, area: Area): Step {
+	const moved = (map: MapView): MapView => ({ ...map, area });
+	switch (s.kind) {
+		case '未ログイン':
+		case 'ログイン中':
+			return only({ ...s, map: moved(s.map) });
+		case 'ログイン済み':
+			return searchTo({ ...s, map: moved(s.map) }, s.screen);
+		case 'ログアウト中':
+			return only({ ...s, from: { ...s.from, map: moved(s.from.map) } });
+	}
+}
+
 /** 知らせの受け取り。どの状態でも受け取る(`undefined` を返さない)。
     タイルの本人違い: 副作用の応答を待っている間は、その応答を捨てないように何もしない。
-    地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。 */
+    地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。
+    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る。 */
 export function notify(s: State, n: Notice): Step {
 	switch (n.type) {
 		case '地図の本人が変わった':
 			return s.kind === 'ログイン済み' && !busy(s.screen)
 				? only({ kind: '未ログイン', error: identityChangedMessage, map: s.map })
 				: only(s);
-		case '地図が動いた': {
-			const moved = (map: MapView): MapView => ({ ...map, area: n.area });
-			switch (s.kind) {
-				case '未ログイン':
-				case 'ログイン中':
-					return only({ ...s, map: moved(s.map) });
-				case 'ログイン済み':
-					return searchTo({ ...s, map: moved(s.map) }, s.screen);
-				case 'ログアウト中':
-					return only({ ...s, from: { ...s.from, map: moved(s.from.map) } });
-			}
-		}
+		case '地図が動いた':
+			return mapMoved(s, n.area);
+		case '地物が変わった':
+			return s.kind === 'ログイン済み' && n.change.as === s.me.id
+				? onChanged(s, n.change)
+				: only(s);
+		case '変更の流れをつなぎ直した':
+			return s.kind === 'ログイン済み' && n.as === s.me.id ? refreshTo(s, s.screen) : only(s);
 	}
 }

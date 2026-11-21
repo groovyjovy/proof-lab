@@ -27,6 +27,11 @@ import Spec
 #print axioms App.p13_shown_ok
 #print axioms App.p13_settled
 #print axioms App.p13_pending_inflight
+#print axioms App.notice_keeps_busy
+#print axioms App.p14_other_stream_ignored
+#print axioms App.p14_stale_only_newer
+#print axioms App.p14_unknown_resolved_applied
+#print axioms App.p14_update_success_applied
 
 -- 認可とサーバー(spec/Spec/AuthzProofs.lean)
 #print axioms Authz.p1

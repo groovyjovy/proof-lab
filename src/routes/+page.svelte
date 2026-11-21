@@ -224,6 +224,7 @@
 		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
 		data-app={app.kind}
 		data-screen={session.screen.kind}
+		data-update-applied={session.screen.kind === '更新中' ? session.screen.applied : undefined}
 		data-role={session.me.role}
 		data-draft-key={draft?.key}
 		data-draft-points={draft?.points.length}
@@ -302,6 +303,16 @@
 			</div>
 			{#if session.screen.notice === '更新失敗'}
 				<p class="text-red-600">保存できませんでした(権限がない可能性があります)</p>
+			{/if}
+			{#if session.screen.stale}
+				<div class="space-y-1 rounded bg-amber-50 p-2" data-stale>
+					<p class="text-amber-800">
+						ほかの人がこの地物を更新しました。このまま保存すると競合になります。読み直すと、あなたの編集は消えます。
+					</p>
+					<ActionButton class="rounded border px-3 py-1 text-xs" action={actions.読み直す}>
+						読み直す
+					</ActionButton>
+				</div>
 			{/if}
 		{:else if session.screen.kind === '更新結果不明'}
 			<p class="text-red-600">

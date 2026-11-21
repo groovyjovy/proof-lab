@@ -1,5 +1,13 @@
 import { expect, test } from 'vitest';
-import { identityChangedMessage, notify, offers, receive, saving } from '#lib/app/machine.ts';
+import {
+	identityChangedMessage,
+	notify,
+	offers,
+	receive,
+	saving,
+	type Notice,
+	type State
+} from '#lib/app/machine.ts';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
@@ -23,7 +31,10 @@ const editProperties = {
 	'L1 応答待ち(読込中・更新中)なら、その副作用がまだ飛んでいる': m3.busyAwaits,
 	'P12 結果が分からなくなった更新は、同じキー・同じ中身でしか送り直さない': m3.p12,
 	'競合の表示が正直: 競合と表示したとき、その更新はサーバーで効いていない': m3.honestConflict,
-	'更新の成功の表示が正直: 成功と表示したとき、その更新はサーバーで効いている': m3.honestUpdate
+	'更新の成功の表示が正直: 成功と表示したとき(応答でも、変更の知らせでも)、その更新はサーバーで効いている':
+		m3.honestUpdate,
+	'P14 警告が正直: ほかの人が更新したと出したとき、サーバーの版は編集を始めたときより新しい':
+		m3.honestWarning
 };
 
 for (const [name, property] of Object.entries(editProperties))
@@ -36,6 +47,108 @@ test('モデル3(編集) 対照: 探索が編集の画面に全部届いてい�
 	check(m3.init, m3.editSteps, (w) => kinds.add(m3.kindOf(w.app)) && true);
 	for (const kind of ['読込中', '編集中', '更新中', '更新結果不明', '競合'])
 		expect(kinds.has(`ログイン済み/${kind}`), kind).toBe(true);
+});
+
+test('モデル3(編集) 対照: 探索が、変更の知らせの場面に届いている', () => {
+	const seen = new Set<string>();
+	check(m3.init, m3.editSteps, (w) => {
+		const v = m3.session(w.app)?.screen;
+		if (v?.kind === '更新中' && v.applied) seen.add('効いたという知らせが応答より先に届いた');
+		if (v?.kind === '編集中' && v.stale) seen.add('ほかの人の更新を知らせた');
+		if (w.changes.length >= 2) seen.add('知らせが2つ届く途中');
+		return true;
+	});
+	expect([...seen].sort()).toEqual(
+		[
+			'効いたという知らせが応答より先に届いた',
+			'ほかの人の更新を知らせた',
+			'知らせが2つ届く途中'
+		].sort()
+	);
+});
+
+const changedOf = (s: State, n: Notice) =>
+	n.type === '地物が変わった' && s.kind === 'ログイン済み' && n.change.as === s.me.id
+		? n.change
+		: null;
+
+/** 版を見ずに、編集している地物の知らせが届いたら警告する。 */
+const warnWithoutVersion: m3.Machine = {
+	offers,
+	receive,
+	notify: (s, n) => {
+		const step = notify(s, n);
+		const c = changedOf(s, n);
+		const after = step.state;
+		if (
+			c &&
+			after.kind === 'ログイン済み' &&
+			after.screen.kind === '編集中' &&
+			c.id === after.screen.edit.ref.id
+		)
+			return { ...step, state: { ...after, screen: { ...after.screen, stale: true } } };
+		return step;
+	}
+};
+
+test('モデル3(編集) 対照: 版を見ずに警告すると、もう読み込んだ変更の知らせがあとから届いて「ほかの人が更新した」と出す', () => {
+	const result = check(m3.init, m3.stepsWith(warnWithoutVersion, m3.editing), m3.honestWarning);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace.slice(-3)).toEqual([
+		'ほかの人が地物を更新する',
+		'地物を読み込めた(版1)',
+		'変更の知らせ(other、版1)が届く'
+	]);
+});
+
+/** 自分の更新が効いたという知らせで、応答を待たずに成功にする。 */
+const leaveBusyOnOwnChange: m3.Machine = {
+	offers,
+	receive,
+	notify: (s, n) => {
+		const c = changedOf(s, n);
+		if (c && s.kind === 'ログイン済み' && s.screen.kind === '更新中' && c.key === s.screen.key)
+			return {
+				state: { ...s, tiles: s.tiles + 1, screen: { kind: '閲覧', selected: null } },
+				effects: []
+			};
+		return notify(s, n);
+	}
+};
+
+test('モデル3(編集) 対照: 効いたという知らせで応答を待たずに成功にすると、あとで届く更新の応答を捨てる', () => {
+	const result = check(m3.init, m3.stepsWith(leaveBusyOnOwnChange, m3.editing), m3.repliesAccepted);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace.slice(-2)).toEqual([
+		'変更の知らせ(u1、版1)が届く',
+		'u1はもう効いている(成功が届く)'
+	]);
+});
+
+/** 結果が分からない更新を、キーを見ずに、同じ地物の知らせで成功にする。 */
+const resolveWithoutKey: m3.Machine = {
+	offers,
+	receive,
+	notify: (s, n) => {
+		const c = changedOf(s, n);
+		if (
+			c &&
+			s.kind === 'ログイン済み' &&
+			s.screen.kind === '更新結果不明' &&
+			c.id === s.screen.edit.ref.id
+		)
+			return {
+				state: { ...s, tiles: s.tiles + 1, screen: { kind: '閲覧', selected: null } },
+				effects: []
+			};
+		return notify(s, n);
+	}
+};
+
+test('モデル3(編集) 対照: キーを見ずに結果不明の更新を成功にすると、ほかの人の更新の知らせで、効いていない更新を成功と出す', () => {
+	const result = check(m3.init, m3.stepsWith(resolveWithoutKey, m3.editing), m3.honestUpdate);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace.slice(-1)).toEqual(['変更の知らせ(other、版1)が届く']);
 });
 
 test('モデル3(編集) 対照: サーバーが更新のキーを見ないと、効いた更新を送り直したときに自分の更新と競合する(競合の表示 が破れる)', () => {
@@ -71,7 +184,7 @@ const resendWithNewKey: m3.Machine = {
 		return {
 			...offers(s),
 			再送: () => ({
-				state: { ...s, screen: { kind: '更新中', edit: v.edit, key: 'u-new' } },
+				state: { ...s, screen: { kind: '更新中', edit: v.edit, key: 'u-new', applied: false } },
 				effects: [{ type: '更新する', edit: v.edit, key: 'u-new', as: s.me.id }]
 			})
 		};

@@ -73,6 +73,14 @@ const branches: Event[] = [
 	{ reply: { type: '競合した' } },
 	{ notice: { type: '地図の本人が変わった' } },
 	...areas.map((area): Event => ({ notice: { type: '地図が動いた', area } })),
+	...[
+		{ id: 1, version: 1, key: 'u1', as: 'u-admin' },
+		{ id: 1, version: 3, key: 'other', as: 'u-admin' },
+		{ id: 1, version: 3, key: 'other', as: 'u-a' },
+		{ id: 2, version: 1, key: 'x', as: 'u-admin' },
+		{ id: 1, version: 1, key: 'u2', as: 'u-a' }
+	].map((change): Event => ({ notice: { type: '地物が変わった', change } })),
+	...['u-admin', 'u-a'].map((as): Event => ({ notice: { type: '変更の流れをつなぎ直した', as } })),
 	...[0, 1, 2, 3, 4].flatMap((seq): Event[] => [
 		{ reply: { type: '検索の応答', seq, result: { type: '見つかった', hits: [hit] } } },
 		{ reply: { type: '検索の応答', seq, result: { type: '検索できない' } } },
@@ -100,6 +108,6 @@ test('範囲内の網羅: モデル3(作成・編集・検索)がたどる画面
 		});
 		expect(actual, JSON.stringify(state)).toEqual(normalize(answers[i]));
 	});
-	// 作成・編集の範囲 949 と検索の範囲 447 のうち、9 状態(ログイン前後の閲覧など)は重なる
-	expect(states.size).toBe(1387);
+	// 作成・編集の範囲と検索の範囲で重なる状態(ログイン前後の閲覧など)は1つに数える
+	expect(states.size).toBe(2075);
 }, 120_000);

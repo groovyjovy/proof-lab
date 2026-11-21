@@ -14,6 +14,7 @@ import {
 	type Effect,
 	type Hit,
 	type LoggedIn,
+	type Notice,
 	type Op,
 	type Point,
 	type Reply,
@@ -36,6 +37,9 @@ export type World = {
 	othersUsed: number;
 	/** サーバーが答えたが、まだ届いていない検索の応答。届く順番は決まっていない */
 	answered: Reply[];
+	/** サーバーが出したが、まだ届いていない変更の知らせ(編集の範囲)。届く順番は決まっていない */
+	changes: Notice[];
+	resumesUsed: number;
 	/** サーバーのセッションの本人(検索の範囲でだけ追う)。ほかのタブでログインし直すと変わる */
 	serverUser: string | null;
 	movesUsed: number;
@@ -98,6 +102,8 @@ export const init: World = {
 	updatesUsed: 0,
 	othersUsed: 0,
 	answered: [],
+	changes: [],
+	resumesUsed: 0,
 	serverUser: null,
 	movesUsed: 0,
 	otherTabsUsed: 0,
@@ -116,7 +122,15 @@ const savingKey = (app: State) => {
 export type Machine = { offers: typeof offers; receive: typeof receive; notify: typeof notify };
 export const machine: Machine = { offers, receive, notify };
 
-function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {}): World {
+/** 何で状態が変わったか。結果不明の更新を「やめる」のは利用者の操作で、成功の表示ではない */
+type Source = '操作' | '応答' | '知らせ';
+
+function apply(
+	w: World,
+	{ state, effects }: AppStep,
+	server: Partial<World> = {},
+	source: Source = '応答'
+): World {
 	const broken = new Set(w.broken);
 	const sent = { ...w.sent };
 	const doubtful = server.doubtful ?? w.doubtful;
@@ -154,6 +168,17 @@ function apply(w: World, { state, effects }: AppStep, server: Partial<World> = {
 		if (after?.screen.kind === '競合' && applied) broken.add('競合の表示');
 		if (after?.screen.kind === '閲覧' && refreshed && !applied) broken.add('更新の成功の表示');
 	}
+	// 結果不明の更新を、知らせで成功にしたなら、そのキーは効いている(P14)
+	if (before?.kind === '更新結果不明' && source !== '操作' && after?.screen.kind === '閲覧')
+		if (!row.applied.includes(before.key)) broken.add('更新の成功の表示');
+	// 「ほかの人が更新した」と出したなら、サーバーの版は編集を始めたときより新しい(P14)
+	if (
+		after?.screen.kind === '編集中' &&
+		after.screen.stale &&
+		!(before?.kind === '編集中' && before.stale) &&
+		!(row.version > after.screen.edit.version)
+	)
+		broken.add('警告の表示');
 	return {
 		...w,
 		...server,
@@ -353,7 +378,7 @@ export const stepsWith =
 			out.push([
 				label,
 				{
-					...apply(w, step),
+					...apply(w, step, {}, '操作'),
 					keysUsed: w.keysUsed + (op.type === '描画開始' ? 1 : 0),
 					loginsUsed: w.loginsUsed + (op.type === 'ログインを押す' ? 1 : 0),
 					updatesUsed: w.updatesUsed + (op.type === '編集を保存' ? 1 : 0)
@@ -364,7 +389,7 @@ export const stepsWith =
 		if (!tracked || (me !== undefined && w.serverUser !== me))
 			out.push([
 				'地図の本人が変わった',
-				apply(w, m.notify(w.app, { type: '地図の本人が変わった' }))
+				apply(w, m.notify(w.app, { type: '地図の本人が変わった' }), {}, '知らせ')
 			]);
 		if (tracked && w.movesUsed < maxMoves)
 			for (const [name, area] of Object.entries(areas))
@@ -390,9 +415,28 @@ export const stepsWith =
 				{
 					...w,
 					row: { ...w.row, version: w.row.version + 1 },
+					changes: emitChange(w, 'other', w.row.version + 1),
 					othersUsed: w.othersUsed + 1
 				}
 			]);
+		const streaming = session(w.app)?.me.id;
+		if (env.scope === '編集' && streaming && w.resumesUsed < maxResumes)
+			out.push([
+				'変更の流れをつなぎ直す',
+				{
+					...apply(
+						w,
+						m.notify(w.app, { type: '変更の流れをつなぎ直した', as: streaming }),
+						{},
+						'知らせ'
+					),
+					resumesUsed: w.resumesUsed + 1
+				}
+			]);
+		w.changes.forEach((n, i) => {
+			const changes = w.changes.filter((_, j) => j !== i);
+			out.push([changeLabel(n), apply(w, m.notify(w.app, n), { changes }, '知らせ')]);
+		});
 		w.inflight.forEach((f, i) => {
 			const inflight = w.inflight.filter((_, j) => j !== i);
 			if (f.type === '検索する') {
@@ -401,9 +445,15 @@ export const stepsWith =
 				return;
 			}
 			for (const [label, reply, rawServer] of deliveries(f, w, env)) {
+				// 更新が効いたら、サーバーはそのキーの変更を知らせる(届くのはもっとあと)
+				const appliedKey = rawServer.row?.applied.find((k) => !w.row.applied.includes(k));
+				const notified =
+					appliedKey && rawServer.row
+						? { changes: emitChange(w, appliedKey, rawServer.row.version) }
+						: {};
 				const server = tracked
 					? { ...rawServer, serverUser: serverUserAfter(w, reply) }
-					: rawServer;
+					: { ...rawServer, ...notified };
 				const step = m.receive(w.app, reply);
 				out.push([
 					label,
@@ -432,6 +482,24 @@ export const stepsWith =
 	};
 
 const mapOf = (app: State) => (app.kind === 'ログアウト中' ? app.from.map : app.map);
+
+const maxResumes = 1;
+
+/** サーバーが変更を知らせる。変更の流れは、ログインしている本人として開いている(いなければ届かない)。 */
+function emitChange(w: World, key: string, version: number): Notice[] {
+	const me = session(w.app)?.me.id;
+	if (!me) return w.changes;
+	const n: Notice = { type: '地物が変わった', change: { id: 1, version, key, as: me } };
+	return [...w.changes, n]
+		.map((c) => JSON.stringify(c))
+		.sort()
+		.map((c) => JSON.parse(c) as Notice);
+}
+
+const changeLabel = (n: Notice) =>
+	n.type === '地物が変わった'
+		? `変更の知らせ(${n.change.key}、版${n.change.version})が届く`
+		: n.type;
 
 /** 届く順番は決まっていないので、届く途中の応答は並べ替えておく(同じ状態を2度数えない)。 */
 const canonical = (replies: Reply[]) =>
@@ -490,7 +558,10 @@ export const busyAwaits = (w: World) => {
 // 競合の表示が正直: 競合と表示したとき、その更新はサーバーで効いていない(P12)
 export const honestConflict = (w: World) => !w.broken.includes('競合の表示');
 
-// 更新の成功の表示が正直: 成功と表示したとき、その更新はサーバーで効いている
+// P14 警告が正直: 「ほかの人が更新した」と出したとき、サーバーの版は編集を始めたときより新しい
+export const honestWarning = (w: World) => !w.broken.includes('警告の表示');
+
+// 更新の成功の表示が正直: 成功と表示したとき(応答でも、変更の知らせでも)、その更新はサーバーで効いている
 export const honestUpdate = (w: World) => !w.broken.includes('更新の成功の表示');
 
 // P13: 一覧に出している地物は、今の本人が読めるものだけ(前の本人への検索の応答を出さない)

@@ -80,6 +80,10 @@ try {
 		observed.set(kind, (observed.get(kind) ?? 0) + 1);
 		if (snapshot('panel')?.identityChanged)
 			observed.set('本人違いで止めた', (observed.get('本人違いで止めた') ?? 0) + 1);
+		if (snapshot('panel')?.stale)
+			observed.set('編集中(ほかの人の更新)', (observed.get('編集中(ほかの人の更新)') ?? 0) + 1);
+		if (snapshot('panel')?.applied)
+			observed.set('更新中(効いたと分かった)', (observed.get('更新中(効いたと分かった)') ?? 0) + 1);
 		const list = snapshot('listing')?.state;
 		if (list) observed.set(`一覧/${list}`, (observed.get(`一覧/${list}`) ?? 0) + 1);
 		if (snapshot('popup')) {
@@ -158,6 +162,8 @@ try {
 		'ログイン済み/更新結果不明',
 		'ログイン済み/競合',
 		...['admin', 'a-staff', 'b-staff', 'viewer'].map((role) => `ポップアップ/${role}`),
+		'編集中(ほかの人の更新)',
+		'更新中(効いたと分かった)',
 		'一覧/検索中',
 		'一覧/見つかった',
 		'追い越された検索の応答',

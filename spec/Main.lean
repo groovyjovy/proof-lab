@@ -144,8 +144,12 @@ def screenOf? (j : Json) : Except String (Screen Json Json) := do
   | "結果不明" => return .unknown (← draftOf? (← j.getObjVal? "draft")) (← noticeFlag? j "再送失敗")
   | "再送中" => return .resaving (← draftOf? (← j.getObjVal? "draft"))
   | "読込中" => return .loading (← refOf? (← j.getObjVal? "ref"))
-  | "編集中" => return .editing (← editOf? (← j.getObjVal? "edit")) (← noticeFlag? j "更新失敗")
-  | "更新中" => return .updating (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
+  | "編集中" =>
+    return .editing (← editOf? (← j.getObjVal? "edit")) (← noticeFlag? j "更新失敗")
+      (← j.getObjValAs? Bool "stale")
+  | "更新中" =>
+    return .updating (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
+      (← j.getObjValAs? Bool "applied")
   | "更新結果不明" =>
     return .updateUnknown (← editOf? (← j.getObjVal? "edit")) (← j.getObjValAs? String "key")
       (← noticeFlag? j "再送失敗")
@@ -185,9 +189,12 @@ def screenToJson : Screen Json Json → Json
       ("notice", if failed then "再送失敗" else .null)]
   | .resaving d => Json.mkObj [("kind", "再送中"), ("draft", draftToJson d)]
   | .loading r => Json.mkObj [("kind", "読込中"), ("ref", refToJson r)]
-  | .editing e failed =>
-    Json.mkObj [("kind", "編集中"), ("edit", editToJson e), ("notice", if failed then "更新失敗" else .null)]
-  | .updating e key => Json.mkObj [("kind", "更新中"), ("edit", editToJson e), ("key", toJson key)]
+  | .editing e failed stale =>
+    Json.mkObj [("kind", "編集中"), ("edit", editToJson e), ("notice", if failed then "更新失敗" else .null),
+      ("stale", toJson stale)]
+  | .updating e key applied =>
+    Json.mkObj [("kind", "更新中"), ("edit", editToJson e), ("key", toJson key),
+      ("applied", toJson applied)]
   | .updateUnknown e key failed =>
     Json.mkObj [("kind", "更新結果不明"), ("edit", editToJson e), ("key", toJson key),
       ("notice", if failed then "再送失敗" else .null)]
@@ -282,6 +289,11 @@ def noticeOf? (j : Json) : Except String (Notice Json) := do
   match ← j.getObjValAs? String "type" with
   | "地図の本人が変わった" => return .tilesIdentityChanged
   | "地図が動いた" => return .mapMoved (← areaOf? (← j.getObjVal? "area"))
+  | "地物が変わった" =>
+    let c ← j.getObjVal? "change"
+    return .changed { id := ← c.getObjValAs? Nat "id", version := ← c.getObjValAs? Nat "version",
+                      key := ← c.getObjValAs? String "key", actor := ← c.getObjValAs? String "as" }
+  | "変更の流れをつなぎ直した" => return .resumed (← j.getObjValAs? String "as")
   | t => throw s!"知らない知らせ: {t}"
 
 /-- 差し出している操作の名前。差し出すかどうかは操作の中身によらない(`offer_depends_on_kind_only`)

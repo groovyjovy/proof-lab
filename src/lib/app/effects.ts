@@ -1,6 +1,6 @@
 import { authClient } from '#lib/auth-client.ts';
 import { roleOf, type City, type Me } from '#lib/domain.ts';
-import type { Draft, Edit, Effect, Hit, Query, Reply, SearchResult } from './machine.ts';
+import type { Draft, Edit, Effect, Hit, Notice, Query, Reply, SearchResult } from './machine.ts';
 
 export const saveTimeoutMs = 10_000;
 const demoPassword = 'password1234';
@@ -197,5 +197,67 @@ export function run(effect: Effect): Promise<Reply> {
 			return update(effect.edit, effect.key, effect.as);
 		case '検索する':
 			return search(effect.query, effect.as);
+	}
+}
+
+const reconnectMs = { first: 1_000, max: 10_000 };
+
+/**
+ * 変更の流れ(P14)。本人(`as`)として開き、地物が変わるたびに知らせを渡す。状態機械の副作用ではなく、
+ * 地図のタイルと同じく、状態機械の外で受けて知らせ(`Notice`)として渡す。戻り値で閉じる。
+ * - 切れたらつなぎ直し、つなぎ直せたら「つなぎ直した」を渡す(切れている間の変更を取りこぼしたかもしれない)
+ * - 本人違い(412)なら「地図の本人が変わった」を渡して終える。ログインしていなければ(401)終える
+ */
+export function subscribeChanges(as: string, deliver: (n: Notice) => void): () => void {
+	const controller = new AbortController();
+	const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+	void (async () => {
+		let connected = 0;
+		let delay = reconnectMs.first;
+		while (!controller.signal.aborted) {
+			try {
+				const res = await fetch(`/api/events?${new URLSearchParams({ as })}`, {
+					signal: controller.signal
+				});
+				if (res.status === 412) return deliver({ type: '地図の本人が変わった' });
+				if (res.status === 401) return;
+				if (!res.ok || !res.body) throw new Error(`変更の流れ: ${res.status}`);
+				if (connected++ > 0) deliver({ type: '変更の流れをつなぎ直した', as });
+				delay = reconnectMs.first;
+				await readChanges(res.body, (change) =>
+					deliver({ type: '地物が変わった', change: { ...change, as } })
+				);
+			} catch {
+				if (controller.signal.aborted) return;
+			}
+			await wait(delay);
+			delay = Math.min(delay * 2, reconnectMs.max);
+		}
+	})();
+	return () => controller.abort();
+}
+
+/** Server-Sent Events の `data:` 行を1つずつ読む。形の違うものは捨てる。 */
+async function readChanges(
+	body: ReadableStream<Uint8Array>,
+	onChange: (c: { id: number; version: number; key: string }) => void
+) {
+	const decoder = new TextDecoder();
+	let buffer = '';
+	for await (const chunk of body) {
+		buffer += decoder.decode(chunk, { stream: true });
+		const events = buffer.split('\n\n');
+		buffer = events.pop() ?? '';
+		for (const event of events)
+			for (const line of event.split('\n')) {
+				if (!line.startsWith('data: ')) continue;
+				try {
+					const v = JSON.parse(line.slice('data: '.length));
+					if (Number.isInteger(v.id) && Number.isInteger(v.version) && typeof v.key === 'string')
+						onChange({ id: v.id, version: v.version, key: v.key });
+				} catch {
+					// 形の違う行は捨てる
+				}
+			}
 	}
 }

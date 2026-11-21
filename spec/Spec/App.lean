@@ -79,9 +79,12 @@ inductive Screen (P F : Type) where
   | resaving (draft : Draft P)
   /-- 編集するために、地物の今の版を読み込んでいる -/
   | loading (ref : Ref)
-  | editing (edit : Edit) (failed : Bool)
-  /-- 更新を送った。キーは、この中身の更新を表す(P12) -/
-  | updating (edit : Edit) (key : String)
+  /-- 名前と備考を編集している。`stale` は、ほかの人がこの地物を、読み込んだときより新しい版にしたと
+      知らされたこと(P14)。保存すれば競合になるので、読み直せるようにする -/
+  | editing (edit : Edit) (failed : Bool) (stale : Bool)
+  /-- 更新を送った。キーは、この中身の更新を表す(P12)。`applied` は、このキーが効いたという
+      変更の知らせが、応答より先に届いたこと(P14) -/
+  | updating (edit : Edit) (key : String) (applied : Bool)
   | updateUnknown (edit : Edit) (key : String) (failed : Bool)
   /-- ほかの人が先に保存していた(P4)。読み直すまで更新を送らない -/
   | conflicted (edit : Edit)
@@ -167,6 +170,15 @@ inductive Reply (F : Type) where
   /-- 番号 `seq` の検索の結果。検索だけは同時にいくつも飛ぶので、どの要求への応答かを書く -/
   | searched (seq : Nat) (result : SearchResult F)
 
+/-- サーバーで地物が変わったという知らせ(変更の流れから届く)。キーは効いた要求のもの
+    (作成は `request_key`、更新は `feature_update` のキー)。 -/
+structure Change where
+  id : Nat
+  version : Nat
+  key : String
+  /-- 変更の流れを開いた本人(要求の `as`)。ログインし直す前の流れから届いたものは捨てる -/
+  actor : String
+
 /-- 副作用とは関係なく届く知らせ。どの状態でも受け取る。
     地図ライブラリは状態機械の外でタイルを取りに行くので、その失敗はここに届く。 -/
 inductive Notice (P : Type) where
@@ -174,6 +186,10 @@ inductive Notice (P : Type) where
   | tilesIdentityChanged
   /-- 地図が動いた(利用者は、状態に関係なく地図を動かせる) -/
   | mapMoved (area : Area P)
+  /-- サーバーで地物が変わった(P14) -/
+  | changed (c : Change)
+  /-- 変更の流れが切れて、つなぎ直した。切れている間の変更は、取りこぼしたかもしれない -/
+  | resumed (actor : String)
 
 inductive Effect (P : Type) where
   | login (email : String)
@@ -193,7 +209,7 @@ variable {P F : Type}
 
 /-- 副作用の応答を待っている。この間は、ほかの副作用を出さない(飛んでいる副作用は高々1つ)。 -/
 def Screen.isBusy : Screen P F → Bool
-  | .saving _ | .resaving _ | .loading _ | .updating _ _ => true
+  | .saving _ | .resaving _ | .loading _ | .updating _ _ _ => true
   | _ => false
 
 /-- 本人が、選んだ地物を編集できるか。サーバーの RLS と同じ判断(`Authz.canWrite`)を使う。 -/
@@ -259,13 +275,13 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .cancel =>
     match s.screen with
-    | .drawing _ _ | .editing _ _ | .conflicted _ => some (s.to (.view none))
+    | .drawing _ _ | .editing _ _ _ | .conflicted _ => some (s.to (.view none))
     | .unknown _ _ | .updateUnknown _ _ _ => some (s.refreshTo (.view none))
     | _ => none
   | .resend =>
     match s.screen with
     | .unknown d _ => some (s.to (.resaving d) [.save d s.me.id])
-    | .updateUnknown e key _ => some (s.to (.updating e key) [.update e key s.me.id])
+    | .updateUnknown e key _ => some (s.to (.updating e key false) [.update e key s.me.id])
     | _ => none
   | .startEdit =>
     match s.screen with
@@ -275,19 +291,19 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     | _ => none
   | .editName name =>
     match s.screen with
-    | .editing e failed => some (s.to (.editing { e with name } failed))
+    | .editing e failed stale => some (s.to (.editing { e with name } failed stale))
     | _ => none
   | .editNote note =>
     match s.screen with
-    | .editing e failed => some (s.to (.editing { e with note } failed))
+    | .editing e failed stale => some (s.to (.editing { e with note } failed stale))
     | _ => none
   | .saveEdit key =>
     match s.screen with
-    | .editing e _ => some (s.to (.updating e key) [.update e key s.me.id])
+    | .editing e _ _ => some (s.to (.updating e key false) [.update e key s.me.id])
     | _ => none
   | .reload =>
     match s.screen with
-    | .conflicted e => some (s.to (.loading e.ref) [.load e.ref.id s.me.id])
+    | .conflicted e | .editing e _ true => some (s.to (.loading e.ref) [.load e.ref.id s.me.id])
     | _ => none
   | .pressLogin _ | .pressLogout => none
 
@@ -307,24 +323,26 @@ def identityChangedMessage : String :=
 def onReply (s : Session P F) : Reply F → Option (Step P F)
   | .saved =>
     match s.screen with
-    | .saving _ | .resaving _ | .updating _ _ => some (s.refreshTo (.view none))
+    | .saving _ | .resaving _ | .updating _ _ _ => some (s.refreshTo (.view none))
     | _ => none
   | .unknown =>
     match s.screen with
     | .saving d | .resaving d => some (s.to (.unknown d false))
-    | .updating e key => some (s.to (.updateUnknown e key false))
+    | .updating e key applied =>
+      -- 効いたという知らせが先に届いていれば、応答が分からなくても成功(P14)
+      some (if applied then s.refreshTo (.view none) else s.to (.updateUnknown e key false))
     | _ => none
   | .rejected =>
     match s.screen with
     | .saving d => some (s.to (.drawing d true))
     | .resaving d => some (s.to (.unknown d true))
-    | .updating e _ => some (s.to (.editing e true))
+    | .updating e _ _ => some (s.to (.editing e true false))
     | _ => none
   | .identityChanged =>
     if s.screen.isBusy then some ⟨.loggedOut (some identityChangedMessage) s.map, []⟩ else none
   | .loaded e =>
     match s.screen with
-    | .loading _ => some (s.to (.editing e false))
+    | .loading _ => some (s.to (.editing e false false))
     | _ => none
   | .loadFailed =>
     match s.screen with
@@ -332,7 +350,7 @@ def onReply (s : Session P F) : Reply F → Option (Step P F)
     | _ => none
   | .conflict =>
     match s.screen with
-    | .updating e _ => some (s.to (.conflicted e))
+    | .updating e _ _ => some (s.to (.conflicted e))
     | _ => none
   | _ => none
 
@@ -365,10 +383,27 @@ def receive : State P F → Reply F → Option (Step P F)
   | .loggedIn s, r => onReply s r
   | _, _ => none
 
+/-- 地物が変わったという知らせ(P14)。地図と一覧は読み直す。応答待ちの状態は抜けない(応答を捨てない)。
+    - 更新中: 自分のキーなら、効いたと覚えておく(応答が結果不明でも成功にできる)
+    - 更新結果不明: 自分のキーなら、効いていたので成功
+    - 編集中: 編集している地物が、読み込んだときより新しい版になったら知らせる。自分の更新が
+      戻ってきた知らせは、読み込んだ版と同じなので知らせない -/
+def onChanged (s : Session P F) (c : Change) : Step P F :=
+  match s.screen with
+  | .updating e key _ =>
+    if c.key = key then s.to (.updating e key true) else s.refreshTo s.screen
+  | .updateUnknown _ key _ =>
+    if c.key = key then s.refreshTo (.view none) else s.refreshTo s.screen
+  | .editing e failed _ =>
+    if c.id = e.ref.id ∧ e.version < c.version then s.refreshTo (.editing e failed true)
+    else s.refreshTo s.screen
+  | screen => s.refreshTo screen
+
 /-- 知らせの受け取り。どの状態でも受け取る(`Option` ではない)。
     タイルの本人違い: 副作用の応答を待っている間は、その応答を捨てないように何もしない。
     要求にはどれも本人を書いてあるので、本人が変わっていればその応答で分かる。
-    地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。 -/
+    地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。
+    地物が変わった・つなぎ直した: ログインしていて、今の本人の流れからなら受け取る(`onChanged`)。 -/
 def notify (s : State P F) : Notice P → Step P F
   | .tilesIdentityChanged =>
     match s with
@@ -382,5 +417,13 @@ def notify (s : State P F) : Notice P → Step P F
     | .loggingIn email map => ⟨.loggingIn email (map.movedTo area), []⟩
     | .loggedIn s => { s with map := s.map.movedTo area }.searchTo s.screen
     | .loggingOut s => ⟨.loggingOut { s with map := s.map.movedTo area }, []⟩
+  | .changed c =>
+    match s with
+    | .loggedIn s => if c.actor = s.me.id then onChanged s c else ⟨.loggedIn s, []⟩
+    | s => ⟨s, []⟩
+  | .resumed actor =>
+    match s with
+    | .loggedIn s => if actor = s.me.id then s.refreshTo s.screen else ⟨.loggedIn s, []⟩
+    | s => ⟨s, []⟩
 
 end App
