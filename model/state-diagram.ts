@@ -31,6 +31,7 @@ export function stateDiagram() {
 	};
 	check(m3.init, m3.stepsWith(recording, m3.creating), () => true);
 	check(m3.init, m3.stepsWith(recording, m3.editing), () => true);
+	check(m3.init, m3.stepsWith(recording, m3.searching), () => true);
 
 	const mermaid = [
 		'stateDiagram-v2',

@@ -75,6 +75,57 @@ def editOf? (j : Json) : Except String Edit := do
            name := ← j.getObjValAs? String "name"
            note := ← j.getObjValAs? String "note" }
 
+def areaToJson (a : Area Json) : Json := Json.arr #[a.1, a.2]
+
+def areaOf? (j : Json) : Except String (Area Json) := do
+  match (← j.getArr?).toList with
+  | [sw, ne] => return (sw, ne)
+  | _ => throw s!"範囲は2点: {j.compress}"
+
+def queryToJson (q : Query Json) : Json :=
+  Json.mkObj [("seq", toJson q.seq), ("area", areaToJson q.area)]
+
+def queryOf? (j : Json) : Except String (Query Json) := do
+  return ⟨← j.getObjValAs? Nat "seq", ← areaOf? (← j.getObjVal? "area")⟩
+
+def hitToJson (h : Ref × Json) : Json :=
+  Json.mkObj [("ref", refToJson h.1), ("properties", h.2)]
+
+def hitOf? (j : Json) : Except String (Ref × Json) := do
+  return (← refOf? (← j.getObjVal? "ref"), ← j.getObjVal? "properties")
+
+def hitsOf? (j : Json) : Except String (List (Ref × Json)) := do
+  (← j.getArr?).toList.mapM hitOf?
+
+def mapToJson (m : MapView Json) : Json :=
+  Json.mkObj [("area", nullable (m.area.map areaToJson)), ("issued", toJson m.issued)]
+
+def mapOf? (j : Json) : Except String (MapView Json) := do
+  let a ← j.getObjVal? "area"
+  return ⟨← if a == .null then pure none else some <$> areaOf? a, ← j.getObjValAs? Nat "issued"⟩
+
+def listingToJson : Listing Json Json → Json
+  | .found q hits =>
+    Json.mkObj [("kind", "見つかった"), ("query", queryToJson q),
+      ("hits", Json.arr (hits.map hitToJson).toArray)]
+  | .failed q => Json.mkObj [("kind", "検索できない"), ("query", queryToJson q)]
+
+def listingOf? (j : Json) : Except String (Listing Json Json) := do
+  match ← j.getObjValAs? String "kind" with
+  | "見つかった" => return .found (← queryOf? (← j.getObjVal? "query")) (← hitsOf? (← j.getObjVal? "hits"))
+  | "検索できない" => return .failed (← queryOf? (← j.getObjVal? "query"))
+  | k => throw s!"知らない一覧: {k}"
+
+def searchToJson (s : Search Json Json) : Json :=
+  Json.mkObj [("pending", nullable (s.pending.map queryToJson)),
+    ("shown", nullable (s.shown.map listingToJson))]
+
+def searchOf? (j : Json) : Except String (Search Json Json) := do
+  let p ← j.getObjVal? "pending"
+  let l ← j.getObjVal? "shown"
+  return ⟨← if p == .null then pure none else some <$> queryOf? p,
+    ← if l == .null then pure none else some <$> listingOf? l⟩
+
 def noticeFlag? (j : Json) (expected : String) : Except String Bool := do
   let n ← j.getObjVal? "notice"
   if n == .null then return false
@@ -104,15 +155,18 @@ def screenOf? (j : Json) : Except String (Screen Json Json) := do
 def sessionOf? (j : Json) : Except String (Session Json Json) := do
   return { me := ← meOf? (← j.getObjVal? "me")
            tiles := ← j.getObjValAs? Nat "tiles"
-           screen := ← screenOf? (← j.getObjVal? "screen") }
+           screen := ← screenOf? (← j.getObjVal? "screen")
+           map := ← mapOf? (← j.getObjVal? "map")
+           search := ← searchOf? (← j.getObjVal? "search") }
 
 def stateOf? (j : Json) : Except String S := do
   match ← j.getObjValAs? String "kind" with
   | "未ログイン" =>
     let e ← j.getObjVal? "error"
-    if e == .null then return .loggedOut none
-    return .loggedOut (some (← e.getStr?))
-  | "ログイン中" => return .loggingIn (← j.getObjValAs? String "email")
+    let map ← mapOf? (← j.getObjVal? "map")
+    if e == .null then return .loggedOut none map
+    return .loggedOut (some (← e.getStr?)) map
+  | "ログイン中" => return .loggingIn (← j.getObjValAs? String "email") (← mapOf? (← j.getObjVal? "map"))
   | "ログイン済み" => return .loggedIn (← sessionOf? j)
   | "ログアウト中" => return .loggingOut (← sessionOf? (← j.getObjVal? "from"))
   | k => throw s!"知らない状態: {k}"
@@ -141,11 +195,13 @@ def screenToJson : Screen Json Json → Json
 
 def sessionToJson (s : Session Json Json) : Json :=
   Json.mkObj [("kind", "ログイン済み"), ("me", meToJson s.me), ("tiles", toJson s.tiles),
-    ("screen", screenToJson s.screen)]
+    ("screen", screenToJson s.screen), ("map", mapToJson s.map), ("search", searchToJson s.search)]
 
 def stateToJson : S → Json
-  | .loggedOut err => Json.mkObj [("kind", "未ログイン"), ("error", nullable (err.map toJson))]
-  | .loggingIn email => Json.mkObj [("kind", "ログイン中"), ("email", toJson email)]
+  | .loggedOut err map =>
+    Json.mkObj [("kind", "未ログイン"), ("error", nullable (err.map toJson)), ("map", mapToJson map)]
+  | .loggingIn email map =>
+    Json.mkObj [("kind", "ログイン中"), ("email", toJson email), ("map", mapToJson map)]
   | .loggedIn s => sessionToJson s
   | .loggingOut s => Json.mkObj [("kind", "ログアウト中"), ("from", sessionToJson s)]
 
@@ -156,6 +212,7 @@ def effectToJson : Effect Json → Json
   | .load id actor => Json.mkObj [("type", "読み込む"), ("id", toJson id), ("as", toJson actor)]
   | .update e key actor =>
     Json.mkObj [("type", "更新する"), ("edit", editToJson e), ("key", toJson key), ("as", toJson actor)]
+  | .search q actor => Json.mkObj [("type", "検索する"), ("query", queryToJson q), ("as", toJson actor)]
 
 def opKindName : OpKind → String
   | .pressLogin => "ログインを押す"
@@ -197,7 +254,14 @@ def opOf? (j : Json) : Except String (Op Json Json) := do
   | "読み直す" => return .reload
   | t => throw s!"知らない操作: {t}"
 
-def replyOf? (j : Json) : Except String Reply := do
+def searchResultOf? (j : Json) : Except String (SearchResult Json) := do
+  match ← j.getObjValAs? String "type" with
+  | "見つかった" => return .found (← hitsOf? (← j.getObjVal? "hits"))
+  | "検索できない" => return .failed
+  | "本人が変わった" => return .identityChanged
+  | t => throw s!"知らない検索の結果: {t}"
+
+def replyOf? (j : Json) : Except String (Reply Json) := do
   match ← j.getObjValAs? String "type" with
   | "ログイン成功" => return .loginOk (← meOf? (← j.getObjVal? "me"))
   | "ログイン失敗" => return .loginFailed (← j.getObjValAs? String "message")
@@ -210,11 +274,14 @@ def replyOf? (j : Json) : Except String Reply := do
   | "読み込めた" => return .loaded (← editOf? (← j.getObjVal? "edit"))
   | "読み込めない" => return .loadFailed
   | "競合した" => return .conflict
+  | "検索の応答" =>
+    return .searched (← j.getObjValAs? Nat "seq") (← searchResultOf? (← j.getObjVal? "result"))
   | t => throw s!"知らない応答: {t}"
 
-def noticeOf? (j : Json) : Except String Notice := do
+def noticeOf? (j : Json) : Except String (Notice Json) := do
   match ← j.getObjValAs? String "type" with
   | "地図の本人が変わった" => return .tilesIdentityChanged
+  | "地図が動いた" => return .mapMoved (← areaOf? (← j.getObjVal? "area"))
   | t => throw s!"知らない知らせ: {t}"
 
 /-- 差し出している操作の名前。差し出すかどうかは操作の中身によらない(`offer_depends_on_kind_only`)

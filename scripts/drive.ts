@@ -84,6 +84,25 @@ const scenarios: Record<string, { draws: boolean; run: (c: Context) => Promise<v
 			await c.shot('再読み込み後');
 		}
 	},
+	search: {
+		draws: false,
+		async run(c) {
+			const { app, shot } = c;
+			const list = (state: string) => app.page.locator(`[data-search="${state}"]`).waitFor();
+			await app.login(c.role);
+			await list('見つかった');
+			await app.settle();
+			await shot('一覧');
+			const next = await app.hold('/api/features/search', 'GET');
+			await app.page.locator('.maplibregl-ctrl-zoom-in').click();
+			await list('検索中');
+			await shot('拡大した範囲を検索中。前の一覧を薄く出す');
+			await next.release();
+			await list('見つかった');
+			await app.settle();
+			await shot('拡大した範囲の一覧');
+		}
+	},
 	tour: {
 		draws: true,
 		async run(c) {

@@ -32,6 +32,37 @@ structure Selected (P F : Type) where
   ref : Ref
   props : F
 
+/-- 地図に見えている範囲(南西の角と北東の角)。状態機械は中身を見ない。 -/
+abbrev Area (P : Type) := P × P
+
+/-- 範囲の検索の要求。番号(`seq`)はタブの中で一度きりで、ログインし直しても振り直さない。
+    検索は同時にいくつも飛び、応答は送った順に届くとは限らないので、応答には番号を書く。 -/
+structure Query (P : Type) where
+  seq : Nat
+  area : Area P
+
+/-- タブの地図。ログインとは関係なく続く(ログアウトしたあとも、前の本人の検索の応答は届く)。 -/
+structure MapView (P : Type) where
+  /-- 今見えている範囲。地図が最初に範囲を知らせるまでは分からない -/
+  area : Option (Area P)
+  /-- これまでに振った検索の番号の数(次に振る番号) -/
+  issued : Nat
+
+def MapView.movedTo (m : MapView P) (area : Area P) : MapView P := { m with area := some area }
+
+/-- 一覧に出しているもの。どの検索への応答かを持つ。 -/
+inductive Listing (P F : Type) where
+  | found (q : Query P) (hits : List (Ref × F))
+  | failed (q : Query P)
+
+def Listing.query : Listing P F → Query P
+  | .found q _ | .failed q => q
+
+/-- 範囲の一覧。応答を待つのは、いちばん新しい検索だけ(それより前の検索の応答は、届いても捨てる)。 -/
+structure Search (P F : Type) where
+  pending : Option (Query P)
+  shown : Option (Listing P F)
+
 /-- 編集中の値。版(`version`)は、サーバーから読み込んだときのもの。 -/
 structure Edit where
   ref : Ref
@@ -59,10 +90,13 @@ structure Session (P F : Type) where
   me : Me
   tiles : Nat
   screen : Screen P F
+  map : MapView P
+  search : Search P F
 
+/-- 地図(`MapView`)は、どの状態にもある。ログインし直しても、検索の番号は続きから振る。 -/
 inductive State (P F : Type) where
-  | loggedOut (error : Option String)
-  | loggingIn (email : String)
+  | loggedOut (error : Option String) (map : MapView P)
+  | loggingIn (email : String) (map : MapView P)
   | loggedIn (s : Session P F)
   | loggingOut (s : Session P F)
 
@@ -107,8 +141,15 @@ def Op.kind {P F : Type} : Op P F → OpKind
   | .saveEdit _ => .saveEdit
   | .reload => .reload
 
+/-- 範囲の検索の結果。 -/
+inductive SearchResult (F : Type) where
+  | found (hits : List (Ref × F))
+  | failed
+  /-- 要求に書いた本人と、サーバーのセッションの本人が違った(P11) -/
+  | identityChanged
+
 /-- 副作用の結果。届いた状態で必ず受け取らなければならない。 -/
-inductive Reply where
+inductive Reply (F : Type) where
   | loginOk (me : Me)
   | loginFailed (message : String)
   | logoutOk
@@ -123,12 +164,16 @@ inductive Reply where
   | loadFailed
   /-- 更新の版が古かった。ほかの人が先に保存していた(P4) -/
   | conflict
+  /-- 番号 `seq` の検索の結果。検索だけは同時にいくつも飛ぶので、どの要求への応答かを書く -/
+  | searched (seq : Nat) (result : SearchResult F)
 
 /-- 副作用とは関係なく届く知らせ。どの状態でも受け取る。
     地図ライブラリは状態機械の外でタイルを取りに行くので、その失敗はここに届く。 -/
-inductive Notice where
+inductive Notice (P : Type) where
   /-- タイルの要求に書いた本人と、サーバーのセッションの本人が違った(P11)。 -/
   | tilesIdentityChanged
+  /-- 地図が動いた(利用者は、状態に関係なく地図を動かせる) -/
+  | mapMoved (area : Area P)
 
 inductive Effect (P : Type) where
   | login (email : String)
@@ -137,6 +182,8 @@ inductive Effect (P : Type) where
   | save (draft : Draft P) (actor : String)
   | load (id : Nat) (actor : String)
   | update (edit : Edit) (key : String) (actor : String)
+  /-- 範囲の検索。ほかの副作用と違い、応答を待たずに次の検索を送る -/
+  | search (q : Query P) (actor : String)
 
 structure Step (P F : Type) where
   state : State P F
@@ -153,18 +200,33 @@ def Screen.isBusy : Screen P F → Bool
 def canEditFeature (me : Me) (ref : Ref) : Bool :=
   Authz.canWrite ⟨me.role, me.canEdit⟩ ref.feature
 
+/-- ログインした直後のセッション。一覧は空で、地図はそれまでのもの。 -/
+def Session.fresh (me : Me) (map : MapView P) : Session P F :=
+  { me, tiles := 0, screen := .view none, map, search := ⟨none, none⟩ }
+
+/-- ページを読み込んだときの状態。ページを読み込み直すと飛んでいた要求もなくなるので、番号は 0 から振る。 -/
 def init (me : Option Me) : State P F :=
   match me with
-  | some me => .loggedIn { me, tiles := 0, screen := .view none }
-  | none => .loggedOut none
+  | some me => .loggedIn (Session.fresh me ⟨none, 0⟩)
+  | none => .loggedOut none ⟨none, 0⟩
 
 def Session.to (s : Session P F) (screen : Screen P F) (effects : List (Effect P) := []) :
     Step P F :=
   ⟨.loggedIn { s with screen }, effects⟩
 
-/-- 保存が終わった(または取り消した)ので、タイルを読み直す。 -/
-def Session.refreshed (s : Session P F) : Session P F :=
-  { s with tiles := s.tiles + 1 }
+/-- 今見えている範囲を検索して、画面 `screen` に移る。番号を1つ振り、応答を待つ検索をこれに替える。
+    範囲がまだ分からなければ検索しない。 -/
+def Session.searchTo (s : Session P F) (screen : Screen P F) : Step P F :=
+  match s.map.area with
+  | none => s.to screen
+  | some area =>
+    let q : Query P := ⟨s.map.issued, area⟩
+    { s with map := { s.map with issued := s.map.issued + 1 },
+             search := { s.search with pending := some q } }.to screen [.search q s.me.id]
+
+/-- 保存が終わった(または取り消した)ので、タイルと一覧を読み直す。 -/
+def Session.refreshTo (s : Session P F) (screen : Screen P F) : Step P F :=
+  { s with tiles := s.tiles + 1 }.searchTo screen
 
 def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .clickMap pos feature =>
@@ -198,7 +260,7 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
   | .cancel =>
     match s.screen with
     | .drawing _ _ | .editing _ _ | .conflicted _ => some (s.to (.view none))
-    | .unknown _ _ | .updateUnknown _ _ _ => some (s.refreshed.to (.view none))
+    | .unknown _ _ | .updateUnknown _ _ _ => some (s.refreshTo (.view none))
     | _ => none
   | .resend =>
     match s.screen with
@@ -231,9 +293,9 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
 
 /-- 操作を差し出しているなら、その遷移。差し出していなければ `none`。 -/
 def perform : State P F → Op P F → Option (Step P F)
-  | .loggedOut _, .pressLogin email => some ⟨.loggingIn email, [.login email]⟩
-  | .loggedOut _, _ => none
-  | .loggingIn _, _ => none
+  | .loggedOut _ map, .pressLogin email => some ⟨.loggingIn email map, [.login email]⟩
+  | .loggedOut _ _, _ => none
+  | .loggingIn _ _, _ => none
   | .loggingOut _, _ => none
   | .loggedIn s, .pressLogout =>
     if s.screen.isBusy then none else some ⟨.loggingOut s, [.logout]⟩
@@ -242,10 +304,10 @@ def perform : State P F → Op P F → Option (Step P F)
 def identityChangedMessage : String :=
   "ほかの画面で別の利用者としてログインしたため、この画面での操作を止めました。もう一度ログインしてください"
 
-def onReply (s : Session P F) : Reply → Option (Step P F)
+def onReply (s : Session P F) : Reply F → Option (Step P F)
   | .saved =>
     match s.screen with
-    | .saving _ | .resaving _ | .updating _ _ => some (s.refreshed.to (.view none))
+    | .saving _ | .resaving _ | .updating _ _ => some (s.refreshTo (.view none))
     | _ => none
   | .unknown =>
     match s.screen with
@@ -259,7 +321,7 @@ def onReply (s : Session P F) : Reply → Option (Step P F)
     | .updating e _ => some (s.to (.editing e true))
     | _ => none
   | .identityChanged =>
-    if s.screen.isBusy then some ⟨.loggedOut (some identityChangedMessage), []⟩ else none
+    if s.screen.isBusy then some ⟨.loggedOut (some identityChangedMessage) s.map, []⟩ else none
   | .loaded e =>
     match s.screen with
     | .loading _ => some (s.to (.editing e false))
@@ -274,22 +336,51 @@ def onReply (s : Session P F) : Reply → Option (Step P F)
     | _ => none
   | _ => none
 
-/-- 応答を受け取った遷移。受け取れなければ `none`(実装では例外にする)。 -/
-def receive : State P F → Reply → Option (Step P F)
-  | .loggingIn _, .loginOk me => some ⟨init (some me), []⟩
-  | .loggingIn _, .loginFailed message => some ⟨.loggedOut (some message), []⟩
-  | .loggingOut _, .logoutOk => some ⟨.loggedOut none, []⟩
-  | .loggingOut s, .logoutFailed => some ⟨.loggedIn s, []⟩
+/-- 検索の応答。応答を待っているいちばん新しい検索への応答だけを一覧に出し、ほかは何も変えずに捨てる。
+    本人が変わったという応答も、いちばん新しい検索へのものだけを信じる(前の本人として送った検索なら、
+    今の本人は変わっていない)。ほかの副作用の応答を待っている間は、その応答を捨てないようにログアウトしない。 -/
+def onSearched (s : Session P F) (seq : Nat) (r : SearchResult F) : Step P F :=
+  match s.search.pending with
+  | some q =>
+    if q.seq = seq then
+      match r with
+      | .found hits => ⟨.loggedIn { s with search := ⟨none, some (.found q hits)⟩ }, []⟩
+      | .failed => ⟨.loggedIn { s with search := ⟨none, some (.failed q)⟩ }, []⟩
+      | .identityChanged =>
+        if s.screen.isBusy then ⟨.loggedIn { s with search := ⟨none, some (.failed q)⟩ }, []⟩
+        else ⟨.loggedOut (some identityChangedMessage) s.map, []⟩
+    else ⟨.loggedIn s, []⟩
+  | none => ⟨.loggedIn s, []⟩
+
+/-- 応答を受け取った遷移。受け取れなければ `none`(実装では例外にする)。
+    検索の応答は、どの状態でも受け取る(前のセッションで送った検索の応答も届く)。
+    ログアウト中は一覧を止めておき、ログアウトに失敗したら検索し直す。 -/
+def receive : State P F → Reply F → Option (Step P F)
+  | .loggingIn _ map, .loginOk me => some ((Session.fresh me map).searchTo (.view none))
+  | .loggingIn _ map, .loginFailed message => some ⟨.loggedOut (some message) map, []⟩
+  | .loggingOut s, .logoutOk => some ⟨.loggedOut none s.map, []⟩
+  | .loggingOut s, .logoutFailed => some (s.searchTo s.screen)
+  | .loggedIn s, .searched seq r => some (onSearched s seq r)
+  | s, .searched _ _ => some ⟨s, []⟩
   | .loggedIn s, r => onReply s r
   | _, _ => none
 
 /-- 知らせの受け取り。どの状態でも受け取る(`Option` ではない)。
-    副作用の応答を待っている間は、その応答を捨てないように何もしない。
-    要求にはどれも本人を書いてあるので、本人が変わっていればその応答で分かる。 -/
-def notify : State P F → Notice → Step P F
-  | .loggedIn s, .tilesIdentityChanged =>
-    if s.screen.isBusy then ⟨.loggedIn s, []⟩
-    else ⟨.loggedOut (some identityChangedMessage), []⟩
-  | s, .tilesIdentityChanged => ⟨s, []⟩
+    タイルの本人違い: 副作用の応答を待っている間は、その応答を捨てないように何もしない。
+    要求にはどれも本人を書いてあるので、本人が変わっていればその応答で分かる。
+    地図が動いた: ログインしていれば、その範囲を検索する。ログアウト中は範囲だけ覚えておく。 -/
+def notify (s : State P F) : Notice P → Step P F
+  | .tilesIdentityChanged =>
+    match s with
+    | .loggedIn s =>
+      if s.screen.isBusy then ⟨.loggedIn s, []⟩
+      else ⟨.loggedOut (some identityChangedMessage) s.map, []⟩
+    | s => ⟨s, []⟩
+  | .mapMoved area =>
+    match s with
+    | .loggedOut err map => ⟨.loggedOut err (map.movedTo area), []⟩
+    | .loggingIn email map => ⟨.loggingIn email (map.movedTo area), []⟩
+    | .loggedIn s => { s with map := s.map.movedTo area }.searchTo s.screen
+    | .loggingOut s => ⟨.loggingOut { s with map := s.map.movedTo area }, []⟩
 
 end App

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
 import type { Me } from '#lib/domain.ts';
-import type { State } from '#lib/app/machine.ts';
+import type { Area, State } from '#lib/app/machine.ts';
 import { check } from '../../model/check.ts';
 import * as m3 from '../../model/model3-app.ts';
 import { startOracle, type Oracle } from '../../scripts/spec-oracle.ts';
@@ -17,6 +17,18 @@ const users: Me[] = [
 	{ id: 'u-a', name: 'A市職員', role: 'a-staff', canEdit: true },
 	{ id: 'u-viewer', name: '閲覧者', role: 'viewer', canEdit: false }
 ];
+
+const areas: Area[] = [
+	[
+		[0, 0],
+		[1, 1]
+	],
+	[
+		[5, 5],
+		[6, 6]
+	]
+];
+const hit = { ref: { id: 2, city: 'A' as const, public: false }, properties: { name: 'f2' } };
 
 // どの状態にも、すべての種類の操作・応答・知らせを1つずつ当てる(差し出していない操作も当てて、両方とも「なし」になるかを見る)
 const branches: Event[] = [
@@ -59,12 +71,18 @@ const branches: Event[] = [
 	},
 	{ reply: { type: '読み込めない' } },
 	{ reply: { type: '競合した' } },
-	{ notice: { type: '地図の本人が変わった' } }
+	{ notice: { type: '地図の本人が変わった' } },
+	...areas.map((area): Event => ({ notice: { type: '地図が動いた', area } })),
+	...[0, 1, 2, 3, 4].flatMap((seq): Event[] => [
+		{ reply: { type: '検索の応答', seq, result: { type: '見つかった', hits: [hit] } } },
+		{ reply: { type: '検索の応答', seq, result: { type: '検索できない' } } },
+		{ reply: { type: '検索の応答', seq, result: { type: '本人が変わった' } } }
+	])
 ];
 
-test('範囲内の網羅: モデル3(作成・編集)がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
+test('範囲内の網羅: モデル3(作成・編集・検索)がたどる画面のすべての状態で、すべてのイベントについて、実装の状態機械と Lean の仕様が同じ結果を返す', async () => {
 	const states = new Map<string, State>();
-	for (const steps of [m3.steps, m3.editSteps])
+	for (const steps of [m3.steps, m3.editSteps, m3.searchSteps])
 		check(m3.init, steps, (w) => {
 			states.set(JSON.stringify(w.app), w.app);
 			return true;
@@ -82,5 +100,6 @@ test('範囲内の網羅: モデル3(作成・編集)がたどる画面のすべ
 		});
 		expect(actual, JSON.stringify(state)).toEqual(normalize(answers[i]));
 	});
-	expect(states.size).toBe(949);
-});
+	// 作成・編集の範囲 949 と検索の範囲 447 のうち、9 状態(ログイン前後の閲覧など)は重なる
+	expect(states.size).toBe(1387);
+}, 120_000);

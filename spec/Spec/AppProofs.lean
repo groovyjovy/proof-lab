@@ -5,7 +5,12 @@ import Spec.App
 
 閉じた系 `Sys` は、画面の状態と、まだ応答が届いていない副作用の列。
 利用者は差し出された操作だけを行い(`Next.act`)、環境は飛んでいる副作用のどれかに、
-ありうる応答のどれかを返す(`Next.deliver`)。地図ライブラリからの知らせは、いつでも届く(`Next.notice`)。
+ありうる応答のどれかを返す(`Next.deliver`)。どの副作用に先に応答するかは決めていないので、
+応答の順序の入れ替わりも含まれる。地図からの知らせは、いつでも届く(`Next.notice`)。
+
+範囲の検索の結果は、サーバーが本人 `a` に返してよいもの(`ok a`)だけとする。`ok` は何でもよい。
+認可の仕様と RLS が「読める地物だけ」を返すこと(spec/Spec/Authz.lean と tests/properties)と
+合わせると、一覧には今の本人が読める地物しか出ない(`p13_shown_ok`)。
 -/
 set_option linter.unusedSimpArgs false
 
@@ -13,44 +18,47 @@ namespace App
 
 open Domain
 
-variable {P F : Type}
+variable {P F : Type} {ok : String → List (Ref × F) → Prop}
 
 structure Sys (P F : Type) where
   app : State P F
   inflight : List (Effect P)
 
 /-- 副作用 `e` に対して、環境が返しうる応答。 -/
-inductive Answers : Effect P → Reply → Prop
-  | loginOk : Answers (.login email) (.loginOk me)
-  | loginFailed : Answers (.login email) (.loginFailed message)
-  | logoutOk : Answers .logout .logoutOk
-  | logoutFailed : Answers .logout .logoutFailed
-  | saved : Answers (.save d a) .saved
-  | rejected : Answers (.save d a) .rejected
-  | unknown : Answers (.save d a) .unknown
-  | identityChanged : Answers (.save d a) .identityChanged
-  | loaded : Answers (.load n a) (.loaded e)
-  | loadFailed : Answers (.load n a) .loadFailed
-  | loadIdentityChanged : Answers (.load n a) .identityChanged
-  | updated : Answers (.update e k a) .saved
-  | updateRejected : Answers (.update e k a) .rejected
-  | updateUnknown : Answers (.update e k a) .unknown
-  | updateConflict : Answers (.update e k a) .conflict
-  | updateIdentityChanged : Answers (.update e k a) .identityChanged
+inductive Answers (ok : String → List (Ref × F) → Prop) : Effect P → Reply F → Prop
+  | loginOk : Answers ok (.login email) (.loginOk me)
+  | loginFailed : Answers ok (.login email) (.loginFailed message)
+  | logoutOk : Answers ok .logout .logoutOk
+  | logoutFailed : Answers ok .logout .logoutFailed
+  | saved : Answers ok (.save d a) .saved
+  | rejected : Answers ok (.save d a) .rejected
+  | unknown : Answers ok (.save d a) .unknown
+  | identityChanged : Answers ok (.save d a) .identityChanged
+  | loaded : Answers ok (.load n a) (.loaded e)
+  | loadFailed : Answers ok (.load n a) .loadFailed
+  | loadIdentityChanged : Answers ok (.load n a) .identityChanged
+  | updated : Answers ok (.update e k a) .saved
+  | updateRejected : Answers ok (.update e k a) .rejected
+  | updateUnknown : Answers ok (.update e k a) .unknown
+  | updateConflict : Answers ok (.update e k a) .conflict
+  | updateIdentityChanged : Answers ok (.update e k a) .identityChanged
+  | found : ok a hits → Answers ok (.search q a) (.searched q.seq (.found hits))
+  | searchFailed : Answers ok (.search q a) (.searched q.seq .failed)
+  | searchIdentityChanged : Answers ok (.search q a) (.searched q.seq .identityChanged)
 
-inductive Next : Sys P F → Sys P F → Prop
+inductive Next (ok : String → List (Ref × F) → Prop) : Sys P F → Sys P F → Prop
   | act {sys : Sys P F} {op : Op P F} {st : Step P F} :
-      perform sys.app op = some st → Next sys ⟨st.state, sys.inflight ++ st.effects⟩
-  | deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} {r : Reply}
+      perform sys.app op = some st → Next ok sys ⟨st.state, sys.inflight ++ st.effects⟩
+  | deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} {r : Reply F}
       {st : Step P F} :
-      sys.inflight = pre ++ e :: post → Answers e r → receive sys.app r = some st →
-      Next sys ⟨st.state, pre ++ post ++ st.effects⟩
-  | notice {sys : Sys P F} {n : Notice} :
-      Next sys ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩
+      sys.inflight = pre ++ e :: post → Answers ok e r → receive sys.app r = some st →
+      Next ok sys ⟨st.state, pre ++ post ++ st.effects⟩
+  | notice {sys : Sys P F} {n : Notice P} :
+      Next ok sys ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩
 
-inductive Reachable : Sys P F → Prop
-  | init (me : Option Me) : Reachable ⟨init me, []⟩
-  | step {s t : Sys P F} : Reachable s → Next s t → Reachable t
+inductive Reachable (ok : String → List (Ref × F) → Prop) : Sys P F → Prop
+  | init (me : Option Me) : Reachable ok ⟨init me, []⟩
+  | step {s t : Sys P F} : Reachable ok s → Next ok s t → Reachable ok t
 
 def Screen.draft? : Screen P F → Option (Draft P)
   | .drawing d _ | .saving d | .unknown d _ | .resaving d => some d
@@ -66,7 +74,7 @@ def Screen.doubtful? : Screen P F → Option (Draft P)
   | .unknown d _ | .resaving d => some d
   | _ => none
 
-/-- 応答を待っているなら、その副作用が、表示している本人として飛んでいる。 -/
+/-- 応答を待っているなら、その副作用が、表示している本人として飛んでいる(検索のほか)。 -/
 def Session.inflight (s : Session P F) : List (Effect P) :=
   match s.screen with
   | .saving d | .resaving d => [.save d s.me.id]
@@ -87,92 +95,421 @@ def State.isBusy (s : State P F) : Bool :=
 def DraftOk (s : Session P F) : Prop :=
   ∀ d, s.screen.draft? = some d → s.me.canEdit = true ∧ (s.me.role ≠ .admin → d.city = s.me.home)
 
-/-- 到達できる状態で成り立つ不変条件。飛んでいる副作用は、画面の状態だけで決まる。 -/
-def Inv : Sys P F → Prop
-  | ⟨.loggedOut _, fl⟩ => fl = []
-  | ⟨.loggingIn email, fl⟩ => fl = [.login email]
-  | ⟨.loggedIn s, fl⟩ => fl = s.inflight ∧ DraftOk s
-  | ⟨.loggingOut s, fl⟩ => fl = [.logout] ∧ s.screen.isBusy = false ∧ DraftOk s
+/-! ## 飛んでいる副作用の2つの列
 
-theorem singleton_split {pre post : List α} {e x : α} (h : pre ++ e :: post = [x]) :
-    pre = [] ∧ e = x ∧ post = [] := by
-  cases pre with
-  | nil => simp_all
-  | cons a rest => simp at h
+検索のほかの副作用(ログイン・ログアウト・保存・読み込み・更新)は、応答を待ってから次を送るので
+高々1つ(`lane`)。検索は応答を待たずに次を送るので、いくつも飛ぶ。 -/
 
-theorem nil_split {pre post : List α} {e : α} (h : pre ++ e :: post = []) : False := by
+/-- 検索の番号。検索でなければ `none`。 -/
+def Effect.seq? : Effect P → Option Nat
+  | .search q _ => some q.seq
+  | _ => none
+
+/-- 検索のほかの、飛んでいる副作用。 -/
+def lane (fl : List (Effect P)) : List (Effect P) := fl.filter (fun e => e.seq?.isNone)
+
+/-- 飛んでいる検索の番号。 -/
+def seqs (fl : List (Effect P)) : List Nat := fl.filterMap Effect.seq?
+
+/-- 飛んでいる検索の番号は送った順に増えていて、どれもまだ振っていない番号より小さい。
+    だから、番号が同じなら同じ要求(`search_unique`)。 -/
+def SearchesOk (issued : Nat) (fl : List (Effect P)) : Prop :=
+  (seqs fl).Pairwise (· < ·) ∧ ∀ n ∈ seqs fl, n < issued
+
+/-- 一覧の不変条件。
+    - 待っている検索は、今見えている範囲のもので、今の本人として飛んでいる
+    - 待っていなければ、一覧は今見えている範囲のもの
+    - 一覧に出している結果は、今の本人に返してよいもの -/
+def ListingOk (ok : String → List (Ref × F) → Prop) (s : Session P F) (fl : List (Effect P)) :
+    Prop :=
+  (∀ q, s.search.pending = some q → some q.area = s.map.area ∧ Effect.search q s.me.id ∈ fl) ∧
+  (s.search.pending = none → s.search.shown.map (·.query.area) = s.map.area) ∧
+  (∀ q hits, s.search.shown = some (.found q hits) → ok s.me.id hits)
+
+/-- ログアウト中は一覧を止めている。範囲が分からないうちは、検索も一覧もない。
+    一覧に出している結果は、今の本人に返してよいもの。 -/
+def FrozenOk (ok : String → List (Ref × F) → Prop) (s : Session P F) : Prop :=
+  (s.map.area = none → s.search.pending = none ∧ s.search.shown = none) ∧
+  (∀ q hits, s.search.shown = some (.found q hits) → ok s.me.id hits)
+
+/-- 到達できる状態で成り立つ不変条件。検索のほかの飛んでいる副作用は、画面の状態だけで決まる。 -/
+def Inv (ok : String → List (Ref × F) → Prop) : Sys P F → Prop
+  | ⟨.loggedOut _ m, fl⟩ => lane fl = [] ∧ SearchesOk m.issued fl
+  | ⟨.loggingIn email m, fl⟩ => lane fl = [.login email] ∧ SearchesOk m.issued fl
+  | ⟨.loggedIn s, fl⟩ =>
+    lane fl = s.inflight ∧ SearchesOk s.map.issued fl ∧ DraftOk s ∧ ListingOk ok s fl
+  | ⟨.loggingOut s, fl⟩ =>
+    lane fl = [.logout] ∧ SearchesOk s.map.issued fl ∧ s.screen.isBusy = false ∧ DraftOk s ∧
+      FrozenOk ok s
+
+/-! ## 列についての補題 -/
+
+@[simp] theorem lane_append (a b : List (Effect P)) : lane (a ++ b) = lane a ++ lane b := by
+  simp [lane]
+
+@[simp] theorem seqs_append (a b : List (Effect P)) : seqs (a ++ b) = seqs a ++ seqs b := by
+  simp [seqs]
+
+@[simp] theorem searchesOk_append_search {i : Nat} {fl : List (Effect P)} {area : Area P}
+    {a : String} : SearchesOk (i + 1) (fl ++ [.search ⟨i, area⟩ a]) ↔ SearchesOk i fl := by
+  have h1 : seqs [Effect.search (⟨i, area⟩ : Query P) a] = [i] := rfl
+  simp only [SearchesOk, seqs_append, h1, List.pairwise_append]
+  constructor
+  · rintro ⟨⟨hp, -, hcross⟩, -⟩
+    exact ⟨hp, fun n hn => hcross n hn i (by simp)⟩
+  · rintro ⟨hp, hlt⟩
+    refine ⟨⟨hp, by simp, fun n hn b hb => ?_⟩, fun n hn => ?_⟩
+    · simp at hb; subst hb; exact hlt n hn
+    · simp at hn
+      rcases hn with hn | rfl
+      · exact Nat.lt_succ_of_lt (hlt n hn)
+      · exact Nat.lt_succ_self _
+
+theorem SearchesOk.remove {i : Nat} {pre post : List (Effect P)} {e : Effect P}
+    (h : SearchesOk i (pre ++ e :: post)) : SearchesOk i (pre ++ post) := by
+  obtain ⟨hp, hlt⟩ := h
+  have hsub : List.Sublist (seqs (pre ++ post)) (seqs (pre ++ e :: post)) :=
+    List.Sublist.filterMap _ (by simp)
+  exact ⟨hp.sublist hsub, fun n hn => hlt n (hsub.subset hn)⟩
+
+theorem mem_seqs {fl : List (Effect P)} {q : Query P} {a : String}
+    (h : Effect.search q a ∈ fl) : q.seq ∈ seqs fl :=
+  List.mem_filterMap.2 ⟨_, h, rfl⟩
+
+/-- 飛んでいる検索は、番号が同じなら同じ要求。 -/
+theorem search_unique {fl : List (Effect P)} (hp : (seqs fl).Pairwise (· < ·)) {q q' : Query P}
+    {a a' : String} (h₁ : Effect.search q a ∈ fl) (h₂ : Effect.search q' a' ∈ fl)
+    (hs : q.seq = q'.seq) : q = q' ∧ a = a' := by
+  induction fl with
+  | nil => simp at h₁
+  | cons x rest ih =>
+    cases x with
+    | search qx ax =>
+      simp only [seqs, List.filterMap_cons, Effect.seq?, List.pairwise_cons] at hp
+      obtain ⟨hhead, hrest⟩ := hp
+      simp only [List.mem_cons, Effect.search.injEq] at h₁ h₂
+      rcases h₁ with ⟨rfl, rfl⟩ | h₁ <;> rcases h₂ with ⟨rfl, rfl⟩ | h₂
+      · exact ⟨rfl, rfl⟩
+      · exact absurd (hhead _ (mem_seqs h₂)) (by omega)
+      · exact absurd (hhead _ (mem_seqs h₁)) (by omega)
+      · exact ih hrest h₁ h₂
+    | _ =>
+      simp only [seqs, List.filterMap_cons, Effect.seq?] at hp
+      simp only [List.mem_cons, reduceCtorEq, false_or] at h₁ h₂
+      exact ih hp h₁ h₂
+
+theorem lane_mem {fl : List (Effect P)} {e : Effect P} (h : e ∈ fl) (he : e.seq? = none) :
+    e ∈ lane fl := by
+  simp [lane, h, he]
+
+theorem lane_split {pre post : List (Effect P)} {e : Effect P} (he : e.seq? = none) :
+    lane (pre ++ e :: post) = lane pre ++ e :: lane post := by
+  simp [lane, List.filter_cons, he]
+
+/-- 検索のほかの副作用が1つだけ飛んでいるなら、それに応答すると、検索のほかは何も飛んでいない。 -/
+theorem lane_single {pre post : List (Effect P)} {e x : Effect P} (he : e.seq? = none)
+    (h : lane (pre ++ e :: post) = [x]) : e = x ∧ lane (pre ++ post) = [] := by
+  rw [lane_split he] at h
+  rcases hpre : lane pre with _ | ⟨y, ys⟩ <;> rw [hpre] at h
+  · simp at h
+    obtain ⟨rfl, hpost⟩ := h
+    simp [hpre, hpost]
+  · simp at h
+
+theorem lane_nonempty {pre post : List (Effect P)} {e : Effect P} (he : e.seq? = none)
+    (h : lane (pre ++ e :: post) = []) : False := by
+  rw [lane_split he] at h
   simp at h
 
-theorem inv_init (me : Option Me) : Inv (⟨init me, []⟩ : Sys P F) := by
-  cases me <;> simp [init, Inv, Session.inflight, DraftOk, Screen.draft?]
+@[simp] theorem lane_nil : lane ([] : List (Effect P)) = [] := rfl
+@[simp] theorem seqs_nil : seqs ([] : List (Effect P)) = [] := rfl
+
+@[simp] theorem lane_cons (e : Effect P) (l : List (Effect P)) :
+    lane (e :: l) = if e.seq?.isNone then e :: lane l else lane l := by
+  simp only [lane, List.filter_cons]
+
+@[simp] theorem seqs_cons (e : Effect P) (l : List (Effect P)) :
+    seqs (e :: l) = e.seq?.toList ++ seqs l := by
+  cases h : e.seq? <;> simp [seqs, List.filterMap_cons, h]
+
+@[simp] theorem searchesOk_append_lane {i : Nat} {fl effs : List (Effect P)}
+    (he : seqs effs = []) : SearchesOk i (fl ++ effs) ↔ SearchesOk i fl := by
+  simp [SearchesOk, he]
+
+theorem lane_split_search {pre post : List (Effect P)} {q : Query P} {a : String} :
+    lane (pre ++ .search q a :: post) = lane (pre ++ post) := by
+  simp [Effect.seq?]
+
+theorem ListingOk.append {s : Session P F} {fl : List (Effect P)} (effs : List (Effect P))
+    (h : ListingOk ok s fl) : ListingOk ok s (fl ++ effs) := by
+  obtain ⟨hp, hn, hs⟩ := h
+  exact ⟨fun q hq => ⟨(hp q hq).1, List.mem_append_left _ (hp q hq).2⟩, hn, hs⟩
+
+/-- 一覧の不変条件は、本人・地図・一覧だけで決まる(画面やタイルが変わっても保たれる)。 -/
+theorem ListingOk.mono {s s' : Session P F} {fl fl' : List (Effect P)} (h : ListingOk ok s fl)
+    (hme : s'.me = s.me) (hmap : s'.map = s.map) (hsearch : s'.search = s.search)
+    (hfl : ∀ x, x ∈ fl → x ∈ fl') : ListingOk ok s' fl' := by
+  obtain ⟨hp, hn, hs⟩ := h
+  rw [← hme, ← hmap, ← hsearch] at *
+  exact ⟨fun q hq => ⟨(hp q hq).1, hfl _ (hp q hq).2⟩, hn, hs⟩
+
+theorem ListingOk.remove {s : Session P F} {pre post : List (Effect P)} {e : Effect P}
+    (h : ListingOk ok s (pre ++ e :: post))
+    (he : ∀ q, s.search.pending = some q → e ≠ .search q s.me.id) :
+    ListingOk ok s (pre ++ post) := by
+  obtain ⟨hp, hn, hs⟩ := h
+  refine ⟨fun q hq => ⟨(hp q hq).1, ?_⟩, hn, hs⟩
+  have hm := (hp q hq).2
+  have hne := he q hq
+  simp only [List.mem_append, List.mem_cons] at hm ⊢
+  rcases hm with hm | rfl | hm
+  · exact Or.inl hm
+  · exact absurd rfl hne
+  · exact Or.inr hm
+
+theorem ListingOk.remove_lane {s : Session P F} {pre post : List (Effect P)} {e : Effect P}
+    (h : ListingOk ok s (pre ++ e :: post)) (he : e.seq? = none) :
+    ListingOk ok s (pre ++ post) :=
+  h.remove fun q _ hq => by subst hq; simp [Effect.seq?] at he
+
+theorem ListingOk.frozen {s : Session P F} {fl : List (Effect P)} (h : ListingOk ok s fl) :
+    FrozenOk ok s := by
+  obtain ⟨hp, hn, hs⟩ := h
+  refine ⟨fun harea => ?_, hs⟩
+  cases hpend : s.search.pending with
+  | some q =>
+    have := (hp q hpend).1
+    rw [harea] at this
+    simp at this
+  | none =>
+    have := hn hpend
+    rw [harea] at this
+    simpa using this
+
+theorem inflight_of_not_busy {s : Session P F} (h : s.screen.isBusy = false) : s.inflight = [] := by
+  obtain ⟨me, tiles, screen, map, search⟩ := s
+  cases screen <;> simp_all [Session.inflight, Screen.isBusy]
+
+/-! ## 不変条件 -/
+
+theorem inv_init (me : Option Me) : Inv ok (⟨init me, []⟩ : Sys P F) := by
+  cases me <;> simp [init, Inv, Session.fresh, Session.inflight, DraftOk, Screen.draft?,
+    SearchesOk, ListingOk]
+
+/-- 範囲を検索して画面 `screen` に移る遷移は、不変条件を保つ。 -/
+theorem inv_searchTo {s : Session P F} {screen : Screen P F} {fl : List (Effect P)}
+    (hlane : lane fl = ({ s with screen } : Session P F).inflight)
+    (hsearch : SearchesOk s.map.issued fl)
+    (hok : DraftOk ({ s with screen } : Session P F))
+    (hfrozen : FrozenOk ok s) :
+    Inv ok ⟨(s.searchTo screen).state, fl ++ (s.searchTo screen).effects⟩ := by
+  obtain ⟨me, tiles, screen₀, ⟨area, issued⟩, ⟨pending, shown⟩⟩ := s
+  obtain ⟨hnone, hshown⟩ := hfrozen
+  cases area with
+  | none =>
+    simp at hnone
+    obtain ⟨rfl, rfl⟩ := hnone
+    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, DraftOk]
+  | some area =>
+    simp_all [Session.searchTo, Session.to, Inv, ListingOk, Session.inflight, DraftOk,
+      Effect.seq?]
 
 theorem inv_act {sys : Sys P F} {op : Op P F} {st : Step P F}
-    (hinv : Inv sys) (h : perform sys.app op = some st) :
-    Inv ⟨st.state, sys.inflight ++ st.effects⟩ := by
+    (hinv : Inv ok sys) (h : perform sys.app op = some st) :
+    Inv ok ⟨st.state, sys.inflight ++ st.effects⟩ := by
   obtain ⟨app, fl⟩ := sys
   cases app with
-  | loggedOut err =>
+  | loggedOut err m =>
     cases op <;> simp [perform] at h
-    subst h; simp_all [Inv]
-  | loggingIn _ => cases op <;> simp [perform] at h
+    subst h; simp_all [Inv, Effect.seq?]
+  | loggingIn _ _ => cases op <;> simp [perform] at h
   | loggingOut _ => cases op <;> simp [perform] at h
   | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
     simp only [Inv] at hinv
-    obtain ⟨rfl, hok⟩ := hinv
-    cases op <;> cases screen <;> simp [perform, onScreen, Screen.isBusy] at h
+    obtain ⟨hlane, hsearch, hok, hlist⟩ := hinv
+    have hfrozen := hlist.frozen
+    obtain ⟨me, tiles, screen, map, search⟩ := s
+    cases op <;> cases screen <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
     all_goals (try split at h) <;> (try simp at h)
     all_goals first
       | subst h
       | obtain ⟨hc, rfl⟩ := h
-    all_goals simp_all [Inv, Session.inflight, DraftOk, Screen.draft?, Session.to,
-      Session.refreshed, Screen.isBusy]
+    all_goals first
+      | (apply inv_searchTo <;> simp_all [Session.inflight, DraftOk, Screen.draft?, FrozenOk] <;> done)
+      | (simp only [Inv]
+         refine ⟨?_, ?_, ?_, ?_, hfrozen⟩ <;>
+           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy, Effect.seq?] <;> done)
+      | (simp only [Inv, Session.to]
+         refine ⟨?_, ?_, ?_, hlist.mono rfl rfl rfl (fun x hx => List.mem_append_left _ hx)⟩ <;>
+           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy, Effect.seq?] <;> done)
 
-theorem inv_deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} {r : Reply}
-    {st : Step P F} (hinv : Inv sys) (hfl : sys.inflight = pre ++ e :: post)
-    (hans : Answers e r) (h : receive sys.app r = some st) :
-    Inv ⟨st.state, pre ++ post ++ st.effects⟩ := by
+/-- 検索のほかの副作用への応答は、不変条件を保つ。 -/
+theorem inv_deliver_lane {app : State P F} {pre post : List (Effect P)} {e : Effect P}
+    {r : Reply F} {st : Step P F} (hinv : Inv ok ⟨app, pre ++ e :: post⟩) (he : e.seq? = none)
+    (hans : Answers ok e r) (h : receive app r = some st) :
+    Inv ok ⟨st.state, pre ++ post ++ st.effects⟩ := by
+  cases app with
+  | loggedOut _ _ =>
+    simp only [Inv] at hinv
+    exact (lane_nonempty he hinv.1).elim
+  | loggingIn email m =>
+    simp only [Inv] at hinv
+    obtain ⟨hl, hs⟩ := hinv
+    obtain ⟨rfl, hl⟩ := lane_single he hl
+    have hs := hs.remove
+    cases hans <;> simp [receive] at h <;> subst h
+    · apply inv_searchTo <;> simp_all [Session.fresh, Session.inflight, DraftOk, Screen.draft?,
+        FrozenOk]
+    · simp_all [Inv, Effect.seq?]
+  | loggingOut sess =>
+    simp only [Inv] at hinv
+    obtain ⟨hl, hs, hbusy, hok, hfrozen⟩ := hinv
+    obtain ⟨rfl, hl⟩ := lane_single he hl
+    have hs := hs.remove
+    cases hans <;> simp [receive] at h <;> subst h
+    · simp_all [Inv]
+    · apply inv_searchTo <;> simp_all [inflight_of_not_busy hbusy]
+  | loggedIn sess =>
+    simp only [Inv] at hinv
+    obtain ⟨hl, hs, hok, hlist⟩ := hinv
+    have hs := hs.remove
+    have hlist' := hlist.remove_lane he
+    have hfrozen := hlist.frozen
+    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    cases screen <;> simp only [Session.inflight] at hl
+    all_goals first
+      | exact (lane_nonempty he hl).elim
+      | (obtain ⟨rfl, hl⟩ := lane_single he hl
+         cases hans <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;> subst h)
+    all_goals first
+      | (apply inv_searchTo <;> simp_all [Session.inflight, DraftOk, Screen.draft?, FrozenOk] <;> done)
+      | (simp only [Inv] at *; simp_all; done)
+      | (simp only [Inv, Session.to]
+         refine ⟨?_, ?_, ?_, hlist'.mono rfl rfl rfl (fun x hx => List.mem_append_left _ hx)⟩ <;>
+           simp_all [Session.inflight, DraftOk, Screen.draft?, Screen.isBusy] <;> done)
+
+/-- 検索の応答は、不変条件を保つ。いちばん新しい検索への応答なら一覧を替え、ほかは何も変えない。 -/
+theorem inv_deliver_search {app : State P F} {pre post : List (Effect P)} {q : Query P}
+    {a : String} {r : SearchResult F} {st : Step P F}
+    (hinv : Inv ok ⟨app, pre ++ .search q a :: post⟩) (hr : ∀ hits, r = .found hits → ok a hits)
+    (h : receive app (.searched q.seq r) = some st) :
+    Inv ok ⟨st.state, pre ++ post ++ st.effects⟩ := by
+  cases app with
+  | loggedOut _ _ =>
+    simp [receive] at h; subst h
+    simp only [Inv, lane_split_search, List.append_nil] at hinv ⊢
+    exact ⟨hinv.1, hinv.2.remove⟩
+  | loggingIn _ _ =>
+    simp [receive] at h; subst h
+    simp only [Inv, lane_split_search, List.append_nil] at hinv ⊢
+    exact ⟨hinv.1, hinv.2.remove⟩
+  | loggingOut _ =>
+    simp [receive] at h; subst h
+    simp only [Inv, lane_split_search, List.append_nil] at hinv ⊢
+    obtain ⟨hl, hs, hb, hok, hf⟩ := hinv
+    exact ⟨hl, hs.remove, hb, hok, hf⟩
+  | loggedIn sess =>
+    simp only [Inv, lane_split_search] at hinv
+    obtain ⟨hl, hs, hok, hlist⟩ := hinv
+    have hs' := hs.remove
+    obtain ⟨me, tiles, screen, map, ⟨pending, shown⟩⟩ := sess
+    simp only [receive, onSearched, Option.some.injEq] at h
+    subst h
+    cases hpend : pending with
+    | none =>
+      subst hpend
+      simp only [Inv, List.append_nil]
+      exact ⟨hl, hs', hok, hlist.remove (fun q' hq' => by simp at hq')⟩
+    | some q' =>
+      subst hpend
+      by_cases hseq : q'.seq = q.seq
+      · -- いちばん新しい検索への応答。番号が同じなので、同じ要求(今の本人として送ったもの)
+        obtain ⟨hpend, -, -⟩ := hlist
+        obtain ⟨harea, hmem⟩ := hpend q' rfl
+        simp only at harea hmem
+        obtain ⟨rfl, rfl⟩ := search_unique hs.1 hmem
+          (show Effect.search q a ∈ pre ++ Effect.search q a :: post by simp) hseq
+        cases r with
+        | found hits =>
+          simp only [hseq, ↓reduceIte, Inv, List.append_nil]
+          refine ⟨hl, hs', hok, fun _ h => by simp at h, fun _ => by simpa [Listing.query] using harea,
+            fun q'' hits'' h => ?_⟩
+          simp at h
+          obtain ⟨rfl, rfl⟩ := h
+          exact hr _ rfl
+        | failed =>
+          simp only [hseq, ↓reduceIte, Inv, List.append_nil]
+          exact ⟨hl, hs', hok, fun _ h => by simp at h, fun _ => by simpa [Listing.query] using harea,
+            fun _ _ h => by simp at h⟩
+        | identityChanged =>
+          simp only [hseq, ↓reduceIte]
+          split
+          · simp only [Inv, List.append_nil]
+            exact ⟨hl, hs', hok, fun _ h => by simp at h,
+              fun _ => by simpa [Listing.query] using harea, fun _ _ h => by simp at h⟩
+          · rename_i hbusy
+            simp only [Inv, List.append_nil]
+            refine ⟨?_, hs'⟩
+            rw [hl]
+            exact inflight_of_not_busy (by simpa using hbusy)
+      · -- 古い検索への応答。何も変えない
+        simp only [hseq, ↓reduceIte, Inv, List.append_nil]
+        refine ⟨hl, hs', hok, hlist.remove (fun q'' hq'' heq => ?_)⟩
+        simp at hq''
+        subst hq''
+        simp at heq
+        exact hseq (by rw [heq.1])
+
+theorem inv_deliver {sys : Sys P F} {pre post : List (Effect P)} {e : Effect P} {r : Reply F}
+    {st : Step P F} (hinv : Inv ok sys) (hfl : sys.inflight = pre ++ e :: post)
+    (hans : Answers ok e r) (h : receive sys.app r = some st) :
+    Inv ok ⟨st.state, pre ++ post ++ st.effects⟩ := by
   obtain ⟨app, fl⟩ := sys
   simp only at hfl
   subst hfl
-  cases app with
-  | loggedOut _ => simp [Inv] at hinv
-  | loggingIn email =>
-    simp [Inv] at hinv
-    obtain ⟨rfl, rfl, rfl⟩ := singleton_split hinv
-    cases hans <;> simp [receive] at h <;> subst h <;>
-      simp [Inv, init, Session.inflight, DraftOk, Screen.draft?]
-  | loggingOut s =>
-    simp [Inv] at hinv
-    obtain ⟨hfl, hsaving, hok⟩ := hinv
-    obtain ⟨rfl, rfl, rfl⟩ := singleton_split hfl
-    cases hans <;> simp [receive] at h <;> subst h <;> simp [Inv]
-    obtain ⟨me, tiles, screen⟩ := s
-    cases screen <;> simp_all [Session.inflight, Screen.isBusy]
-  | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
-    simp [Inv] at hinv
-    obtain ⟨hfl, hok⟩ := hinv
-    cases screen <;> simp [Session.inflight] at hfl
-    all_goals first
-      | exact (nil_split hfl).elim
-      | (obtain ⟨rfl, rfl, rfl⟩ := singleton_split hfl
-         cases hans <;> simp [receive, onReply, Screen.isBusy] at h <;> subst h <;>
-           simp_all [Session.to, Session.refreshed, Inv, Session.inflight, DraftOk, Screen.draft?])
+  cases hans with
+  | found hok => exact inv_deliver_search hinv (fun _ h => by cases h; exact hok) h
+  | searchFailed => exact inv_deliver_search hinv (fun _ h => by cases h) h
+  | searchIdentityChanged => exact inv_deliver_search hinv (fun _ h => by cases h) h
+  | _ => exact inv_deliver_lane hinv rfl (by constructor) h
 
-theorem inv_notice {sys : Sys P F} {n : Notice} (hinv : Inv sys) :
-    Inv ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩ := by
+theorem inv_notice {sys : Sys P F} {n : Notice P} (hinv : Inv ok sys) :
+    Inv ok ⟨(notify sys.app n).state, sys.inflight ++ (notify sys.app n).effects⟩ := by
   obtain ⟨app, fl⟩ := sys
-  cases n
-  cases app with
-  | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
-    simp only [Inv] at hinv
-    obtain ⟨rfl, hok⟩ := hinv
-    cases screen <;> simp [notify, Screen.isBusy, Inv, Session.inflight, hok]
-  | _ => simpa [notify] using hinv
+  cases n with
+  | tilesIdentityChanged =>
+    cases app with
+    | loggedIn s =>
+      simp only [Inv] at hinv
+      obtain ⟨hl, hs, hok, hlist⟩ := hinv
+      simp only [notify]
+      split
+      · simpa [Inv] using ⟨hl, hs, hok, hlist⟩
+      · rename_i hbusy
+        simp only [Inv, List.append_nil]
+        exact ⟨by rw [hl]; exact inflight_of_not_busy (by simpa using hbusy), hs⟩
+    | _ => simpa [notify] using hinv
+  | mapMoved area =>
+    cases app with
+    | loggedOut _ _ => simpa [notify, Inv, MapView.movedTo] using hinv
+    | loggingIn _ _ => simpa [notify, Inv, MapView.movedTo] using hinv
+    | loggingOut s =>
+      simp only [Inv] at hinv
+      obtain ⟨hl, hs, hb, hok, -, hshown⟩ := hinv
+      simp only [notify, Inv, List.append_nil]
+      exact ⟨hl, hs, hb, hok, fun h => by simp [MapView.movedTo] at h, hshown⟩
+    | loggedIn s =>
+      simp only [Inv] at hinv
+      obtain ⟨hl, hs, hok, hlist⟩ := hinv
+      have hfrozen := hlist.frozen
+      simp only [notify]
+      apply inv_searchTo
+      · exact hl
+      · exact hs
+      · exact hok
+      · exact ⟨fun h => by simp [MapView.movedTo] at h, hfrozen.2⟩
 
-theorem reachable_inv {sys : Sys P F} (h : Reachable sys) : Inv sys := by
+theorem reachable_inv {sys : Sys P F} (h : Reachable ok sys) : Inv ok sys := by
   induction h with
   | init me => exact inv_init me
   | step _ hnext ih =>
@@ -184,49 +521,47 @@ theorem reachable_inv {sys : Sys P F} (h : Reachable sys) : Inv sys := by
 /-! ## 性質 -/
 
 /-- 応答を捨てない: 飛んでいる副作用への応答は、どれも今の状態で受け取れる。
+    検索の応答は、前のセッションで送ったものでも、どの状態でも受け取る。
     (保存中にログアウトできた最初の版では、これが破れて保存の結果が捨てられた。L1 の反例) -/
-theorem replies_accepted {sys : Sys P F} {e : Effect P} {r : Reply}
-    (h : Reachable sys) (he : e ∈ sys.inflight) (hans : Answers e r) :
+theorem replies_accepted {sys : Sys P F} {e : Effect P} {r : Reply F}
+    (h : Reachable ok sys) (he : e ∈ sys.inflight) (hans : Answers ok e r) :
     (receive sys.app r).isSome := by
   have hinv := reachable_inv h
   obtain ⟨app, fl⟩ := sys
-  cases app with
-  | loggedOut _ =>
-    simp only [Inv] at hinv
-    simp [hinv] at he
-  | loggingIn _ =>
-    simp only [Inv] at hinv
-    simp [hinv] at he
-    subst he
-    cases hans <;> simp [receive]
-  | loggingOut s =>
-    simp only [Inv] at hinv
-    simp [hinv.1] at he
-    subst he
-    cases hans <;> simp [receive]
-  | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
-    simp only [Inv] at hinv
-    rw [hinv.1] at he
-    cases screen <;> simp [Session.inflight] at he <;> subst he <;>
-      cases hans <;> simp [receive, onReply, Screen.isBusy]
+  by_cases hs : e.seq? = none
+  · have hl := lane_mem he hs
+    cases app with
+    | loggedOut _ _ => simp only [Inv] at hinv; rw [hinv.1] at hl; simp at hl
+    | loggingIn _ _ =>
+      simp only [Inv] at hinv; rw [hinv.1] at hl; simp at hl; subst hl
+      cases hans <;> simp [receive]
+    | loggingOut _ =>
+      simp only [Inv] at hinv; rw [hinv.1] at hl; simp at hl; subst hl
+      cases hans <;> simp [receive]
+    | loggedIn s =>
+      obtain ⟨me, tiles, screen, map, search⟩ := s
+      simp only [Inv] at hinv
+      rw [hinv.1] at hl
+      cases screen <;> simp [Session.inflight] at hl <;> subst hl <;> cases hans <;>
+        simp [receive, onReply, Screen.isBusy]
+  · cases hans <;> simp [Effect.seq?] at hs <;> cases app <;> simp [receive]
 
-/-- 飛んでいる副作用は高々1つ。だから応答に「どの副作用の応答か」を書かなくてよい。 -/
-theorem single_flight {sys : Sys P F} (h : Reachable sys) : sys.inflight.length ≤ 1 := by
+/-- 検索のほかの副作用は、飛んでいるのは高々1つ。だから、その応答には「どの副作用の応答か」を書かなくてよい。
+    検索は同時にいくつも飛ぶので、応答に番号を書く(`Reply.searched`)。 -/
+theorem lane_single_flight {sys : Sys P F} (h : Reachable ok sys) :
+    (lane sys.inflight).length ≤ 1 := by
   have hinv := reachable_inv h
   obtain ⟨app, fl⟩ := sys
   cases app with
-  | loggedOut _ => simp_all [Inv]
-  | loggingIn _ => simp_all [Inv]
-  | loggingOut _ => simp_all [Inv]
   | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
-    simp [Inv] at hinv
-    obtain ⟨rfl, _⟩ := hinv
+    obtain ⟨me, tiles, screen, map, search⟩ := s
+    simp only [Inv] at hinv
+    rw [hinv.1]
     cases screen <;> simp [Session.inflight]
+  | _ => simp only [Inv] at hinv; simp [hinv.1]
 
 /-- 描画の権限: 到達できる状態では、下書きは編集できる人にしかなく、市職員の下書きは自分の市。 -/
-theorem draft_permission {sys : Sys P F} {s : Session P F} (h : Reachable sys)
+theorem draft_permission {sys : Sys P F} {s : Session P F} (h : Reachable ok sys)
     (hs : sys.app.session? = some s) : DraftOk s := by
   have hinv := reachable_inv h
   obtain ⟨app, fl⟩ := sys
@@ -237,34 +572,83 @@ theorem p6 (s : State P F) (key : String) (h : s.isBusy = true) :
     perform s (.startDrawing key) = none := by
   cases s with
   | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
+    obtain ⟨me, tiles, screen, map, search⟩ := s
     cases screen <;> simp_all [State.isBusy, Screen.isBusy, perform, onScreen]
   | _ => simp [State.isBusy] at h
+
+theorem searchTo_state (s : Session P F) (screen : Screen P F) :
+    ∃ s', (s.searchTo screen).state = .loggedIn s' ∧ s'.screen = screen ∧ s'.me = s.me := by
+  unfold Session.searchTo
+  split <;> exact ⟨_, rfl, rfl, rfl⟩
+
+@[simp high] theorem searchTo_isBusy (s : Session P F) (screen : Screen P F) :
+    (s.searchTo screen).state.isBusy = screen.isBusy := by
+  obtain ⟨s', h, hs, -⟩ := searchTo_state s screen
+  simp [h, State.isBusy, hs]
+
+@[simp high] theorem mem_searchTo_effects {s : Session P F} {screen : Screen P F} {e : Effect P} :
+    e ∈ (s.searchTo screen).effects ↔
+      ∃ area, s.map.area = some area ∧ e = .search ⟨s.map.issued, area⟩ s.me.id := by
+  unfold Session.searchTo
+  split <;> simp_all [Session.to, eq_comm]
+
+theorem onSearched_effects (s : Session P F) (seq : Nat) (r : SearchResult F) :
+    (onSearched s seq r).effects = [] := by
+  unfold onSearched
+  split <;> (try split) <;> (try split) <;> (try split) <;> rfl
 
 /-- L1 の状態機械の側: 応答を待っている副作用(保存・読み込み・更新)の応答を受け取れば、
     必ず応答待ちを抜ける。応答を待っているときはその副作用がちょうど1つ飛んでいて
     (`reachable_inv`)、応答はどれも受け取れる(`replies_accepted`)。残る「副作用はいつか必ず応答する」は
     実行時の責務で、src/lib/app/effects.ts のタイムアウトが受け持つ(証明ではなくテストで確かめる)。 -/
-theorem l1_exit {s : Session P F} {e : Effect P} {r : Reply} {st : Step P F}
-    (he : e ∈ s.inflight) (hans : Answers e r) (h : receive (.loggedIn s) r = some st) :
+theorem l1_exit {s : Session P F} {e : Effect P} {r : Reply F} {st : Step P F}
+    (he : e ∈ s.inflight) (hans : Answers ok e r) (h : receive (.loggedIn s) r = some st) :
     st.state.isBusy = false := by
-  obtain ⟨me, tiles, screen⟩ := s
+  obtain ⟨me, tiles, screen, map, search⟩ := s
   cases screen <;> simp [Session.inflight] at he <;> subst he <;> cases hans <;>
-    simp [receive, onReply, Screen.isBusy] at h <;> subst h <;>
-    simp [Session.to, Session.refreshed, State.isBusy, Screen.isBusy]
+    simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;> subst h <;>
+    (try rw [searchTo_isBusy]) <;> simp [Session.to, State.isBusy, Screen.isBusy]
 
-/-- 応答を受け取っても、副作用は出さない。副作用を出すのは操作だけ。 -/
-theorem receive_no_effects {s : State P F} {r : Reply} {st : Step P F}
-    (h : receive s r = some st) : st.effects = [] := by
-  cases s with
-  | loggedIn sess =>
-    obtain ⟨me, tiles, screen⟩ := sess
-    cases r <;> cases screen <;> simp [receive, onReply, Screen.isBusy] at h <;>
-      (try subst h) <;> simp [Session.to, Session.refreshed]
-  | _ => cases r <;> simp [receive] at h <;> (try subst h) <;> rfl
+/-- 応答を受け取って出す副作用は、検索だけ。保存などを送るのは、利用者の操作だけ。
+    検索の応答は、副作用を何も出さない。 -/
+theorem receive_only_searches {s : State P F} {r : Reply F} {st : Step P F}
+    (h : receive s r = some st) : ∀ e ∈ st.effects, e.seq?.isSome := by
+  cases r with
+  | searched seq res =>
+    cases s <;> simp [receive] at h <;> subst h <;> simp [onSearched_effects]
+  | _ =>
+    cases s with
+    | loggedIn sess =>
+      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      cases screen <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;>
+        (try subst h) <;> (try simp [Session.to]) <;> exact fun e _ _ _ he => by subst he; rfl
+    | _ => simp [receive] at h <;> (try subst h) <;> (try simp) <;>
+        exact fun e _ _ _ he => by subst he; rfl
 
 def State.doubtful? (s : State P F) : Option (Draft P) := s.session?.bind (·.screen.doubtful?)
 def State.draft? (s : State P F) : Option (Draft P) := s.session?.bind (·.screen.draft?)
+def State.edit? (s : State P F) : Option Edit := s.session?.bind (·.screen.edit?)
+
+@[simp high] theorem searchTo_doubtful? (s : Session P F) (screen : Screen P F) :
+    (s.searchTo screen).state.doubtful? = screen.doubtful? := by
+  obtain ⟨s', h, hs, -⟩ := searchTo_state s screen
+  simp [h, State.doubtful?, State.session?, hs]
+
+@[simp high] theorem searchTo_draft? (s : Session P F) (screen : Screen P F) :
+    (s.searchTo screen).state.draft? = screen.draft? := by
+  obtain ⟨s', h, hs, -⟩ := searchTo_state s screen
+  simp [h, State.draft?, State.session?, hs]
+
+@[simp high] theorem searchTo_edit? (s : Session P F) (screen : Screen P F) :
+    (s.searchTo screen).state.edit? = screen.edit? := by
+  obtain ⟨s', h, hs, -⟩ := searchTo_state s screen
+  simp [h, State.edit?, State.session?, hs]
+
+/-- 検索して画面を移る遷移(`searchTo`)の結果を、画面の状態の言葉に直す。
+    `State.doubtful?` などを展開する前に使う(展開すると、これらの補題が当たらなくなる)。 -/
+macro "simp_searchTo" : tactic =>
+  `(tactic| simp only [searchTo_doubtful?, searchTo_draft?, searchTo_edit?, searchTo_isBusy,
+    mem_searchTo_effects])
 
 /-- P10 の状態機械の側(1): 結果が分からない下書きは、操作では変わらない。操作のあとも同じ下書きの
     まま結果が分からないか、下書きそのものがなくなる。保存を送るなら、その下書きそのもの。 -/
@@ -274,27 +658,35 @@ theorem p10_perform {s : State P F} {op : Op P F} {st : Step P F} {d : Draft P}
       ∀ d' a, Effect.save d' a ∈ st.effects → d' = d := by
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen⟩ := sess
+    obtain ⟨me, tiles, screen, map, search⟩ := sess
     cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
-      cases op <;> simp [perform, onScreen, Screen.isBusy] at h <;> subst h <;>
-      simp [State.doubtful?, State.draft?, State.session?, Session.to, Session.refreshed,
-        Screen.doubtful?, Screen.draft?]
+      cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h <;> subst h <;>
+      (try simp_searchTo) <;>
+      simp [State.doubtful?, State.draft?, State.session?, Session.to, Screen.doubtful?,
+        Screen.draft?]
   | loggingOut _ => cases op <;> simp [perform] at h
   | _ => simp [State.doubtful?, State.session?] at hd
 
-/-- P10 の状態機械の側(2): 応答でも変わらない。応答を受け取っても副作用は出さない。 -/
-theorem p10_receive {s : State P F} {r : Reply} {st : Step P F} {d : Draft P}
+/-- P10 の状態機械の側(2): 応答でも変わらない。応答を受け取って出すのは検索だけ。 -/
+theorem p10_receive {s : State P F} {r : Reply F} {st : Step P F} {d : Draft P}
     (hd : s.doubtful? = some d) (h : receive s r = some st) :
-    (st.state.doubtful? = some d ∨ st.state.draft? = none) ∧ st.effects = [] := by
+    (st.state.doubtful? = some d ∨ st.state.draft? = none) ∧ ∀ e ∈ st.effects, e.seq?.isSome := by
+  refine ⟨?_, receive_only_searches h⟩
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen⟩ := sess
+    obtain ⟨me, tiles, screen, map, ⟨pending, shown⟩⟩ := sess
     cases screen <;> simp [State.doubtful?, State.session?, Screen.doubtful?] at hd <;> subst hd <;>
-      cases r <;> simp [receive, onReply, Screen.isBusy] at h <;> subst h <;>
-      simp [State.doubtful?, State.draft?, State.session?, Session.to, Session.refreshed,
-        Screen.doubtful?, Screen.draft?]
+      cases r <;> simp [receive, onReply, Screen.isBusy, Session.refreshTo] at h <;> subst h
+    all_goals first
+      | (simp only [searchTo_doubtful?, searchTo_draft?]; simp [Screen.draft?]; done)
+      | (simp [State.doubtful?, State.draft?, State.session?, Session.to, Screen.doubtful?,
+          Screen.draft?]; done)
+      | (unfold onSearched
+         split <;> (try split) <;> (try split) <;>
+           simp [State.doubtful?, State.draft?, State.session?, Screen.doubtful?, Screen.draft?,
+             Screen.isBusy] at *)
   | loggingOut sess =>
-    cases r <;> simp [receive] at h <;> subst h <;>
+    cases r <;> simp [receive] at h <;> subst h <;> (try simp_searchTo) <;>
       simp_all [State.doubtful?, State.draft?, State.session?]
   | _ => simp [State.doubtful?, State.session?] at hd
 
@@ -304,44 +696,51 @@ theorem p10_receive {s : State P F} {r : Reply} {st : Step P F} {d : Draft P}
 theorem p10_enter {sess : Session P F} {d : Draft P} {st : Step P F}
     (hs : sess.screen = .saving d ∨ sess.screen = .resaving d)
     (h : receive (.loggedIn sess) .unknown = some st) : st.state.doubtful? = some d := by
-  obtain ⟨me, tiles, screen⟩ := sess
+  obtain ⟨me, tiles, screen, map, search⟩ := sess
   rcases hs with hs | hs <;> simp at hs <;> subst hs <;> simp [receive, onReply, Screen.isBusy] at h <;>
     subst h <;> simp [State.doubtful?, State.session?, Session.to, Screen.doubtful?]
 
 /-- P10 の状態機械の側(4): 知らせでも変わらない。 -/
-theorem p10_notify {s : State P F} {n : Notice} {d : Draft P} (hd : s.doubtful? = some d) :
+theorem p10_notify {s : State P F} {n : Notice P} {d : Draft P} (hd : s.doubtful? = some d) :
     (notify s n).state.doubtful? = some d ∨ (notify s n).state.draft? = none := by
-  cases n
-  cases s with
-  | loggedIn sess =>
-    obtain ⟨me, tiles, screen⟩ := sess
-    cases screen <;> simp_all [notify, Screen.isBusy, State.doubtful?, State.draft?,
-      State.session?, Screen.doubtful?]
-  | _ => simp_all [notify]
+  cases n with
+  | tilesIdentityChanged =>
+    cases s with
+    | loggedIn sess =>
+      obtain ⟨me, tiles, screen, map, search⟩ := sess
+      cases screen <;> simp_all [notify, Screen.isBusy, State.doubtful?, State.draft?,
+        State.session?, Screen.doubtful?]
+    | _ => simp_all [notify]
+  | mapMoved area =>
+    cases s <;> simp only [notify] <;> (try simp_searchTo) <;>
+      simp_all [State.doubtful?, State.draft?, State.session?]
 
 /-- データの要求に書いた本人。ログイン・ログアウトには書かない。 -/
 def Effect.actor? : Effect P → Option String
-  | .save _ a | .load _ a | .update _ _ a => some a
+  | .save _ a | .load _ a | .update _ _ a | .search _ a => some a
   | _ => none
 
-/-- P11 の状態機械の側: 飛んでいるデータの要求(保存・読み込み・更新)は、どれも画面が今表示している
-    本人として送られている。サーバーは、要求に書いた本人とセッションの本人が違えば答えない(`Authz.p11`)。 -/
-theorem requests_carry_identity {sys : Sys P F} {e : Effect P} {a : String} (h : Reachable sys)
-    (he : e ∈ sys.inflight) (ha : e.actor? = some a) : ∃ s, sys.app = .loggedIn s ∧ a = s.me.id := by
+/-- P11 の状態機械の側: 検索のほかのデータの要求(保存・読み込み・更新)は、飛んでいるならどれも、画面が
+    今表示している本人として送られている。サーバーは、要求に書いた本人とセッションの本人が違えば
+    答えない(`Authz.p11`)。検索は前の本人として送ったものも飛んでいるので、ここには含めない
+    (いちばん新しい検索は今の本人として飛んでいる: `p13_pending_inflight`)。 -/
+theorem requests_carry_identity {sys : Sys P F} {e : Effect P} {a : String}
+    (h : Reachable ok sys) (he : e ∈ lane sys.inflight) (ha : e.actor? = some a) :
+    ∃ s, sys.app = .loggedIn s ∧ a = s.me.id := by
   have hinv := reachable_inv h
   obtain ⟨app, fl⟩ := sys
   cases app with
   | loggedIn s =>
-    obtain ⟨me, tiles, screen⟩ := s
+    obtain ⟨me, tiles, screen, map, search⟩ := s
     simp only [Inv] at hinv
     rw [hinv.1] at he
     cases screen <;> simp [Session.inflight] at he <;> subst he <;> simp [Effect.actor?] at ha
     all_goals exact ⟨_, rfl, ha.symm⟩
-  | loggedOut _ => simp only [Inv] at hinv; simp [hinv] at he
-  | loggingIn _ => simp only [Inv] at hinv; simp [hinv] at he; subst he; simp [Effect.actor?] at ha
-  | loggingOut _ => simp only [Inv] at hinv; simp [hinv.1] at he; subst he; simp [Effect.actor?] at ha
-
-def State.edit? (s : State P F) : Option Edit := s.session?.bind (·.screen.edit?)
+  | loggedOut _ _ => simp only [Inv] at hinv; simp [hinv.1] at he
+  | loggingIn _ _ =>
+    simp only [Inv] at hinv; simp [hinv.1] at he; subst he; simp [Effect.actor?] at ha
+  | loggingOut _ =>
+    simp only [Inv] at hinv; simp [hinv.1] at he; subst he; simp [Effect.actor?] at ha
 
 /-- P4 の画面の側(1): 編集中の地物と版は、どの操作でも変わらない(変えられるのは名前と備考だけ)。
     編集の値は、読み込みの応答(`loaded`)でしか生まれないので、更新に書く版はサーバーから読んだもの。 -/
@@ -350,14 +749,15 @@ theorem p4_ops_keep_version {s : State P F} {op : Op P F} {st : Step P F} {e' : 
     ∃ e, s.edit? = some e ∧ e'.version = e.version ∧ e'.ref = e.ref := by
   cases s with
   | loggedIn sess =>
-    obtain ⟨me, tiles, screen⟩ := sess
-    cases screen <;> cases op <;> simp [perform, onScreen, Screen.isBusy] at h
+    obtain ⟨me, tiles, screen, map, search⟩ := sess
+    cases screen <;> cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h
     all_goals (try split at h) <;> (try simp at h)
     all_goals first
       | subst h
       | obtain ⟨_, rfl⟩ := h
       | skip
-    all_goals simp_all [State.edit?, State.session?, Session.to, Session.refreshed, Screen.edit?]
+    all_goals (try simp only [searchTo_edit?] at he')
+    all_goals simp_all [State.edit?, State.session?, Session.to, Screen.edit?]
     all_goals (subst he'; exact ⟨rfl, rfl⟩)
   | _ => cases op <;> simp [perform] at h <;> subst h <;> simp [State.edit?, State.session?] at he'
 
@@ -365,7 +765,7 @@ theorem p4_ops_keep_version {s : State P F} {op : Op P F} {st : Step P F} {e' : 
 theorem p4_no_update_after_conflict {sess : Session P F} {e : Edit} {op : Op P F} {st : Step P F}
     (hs : sess.screen = .conflicted e) (h : perform (.loggedIn sess) op = some st) :
     ∀ e' k a, Effect.update e' k a ∉ st.effects := by
-  obtain ⟨me, tiles, screen⟩ := sess
+  obtain ⟨me, tiles, screen, map, search⟩ := sess
   simp at hs; subst hs
   cases op <;> simp [perform, onScreen, Screen.isBusy] at h <;> subst h <;> simp [Session.to]
 
@@ -375,16 +775,17 @@ theorem p12_resend_same {sess : Session P F} {e : Edit} {key : String} {failed :
     {op : Op P F} {st : Step P F} (hs : sess.screen = .updateUnknown e key failed)
     (h : perform (.loggedIn sess) op = some st) :
     ∀ e' k a, Effect.update e' k a ∈ st.effects → e' = e ∧ k = key := by
-  obtain ⟨me, tiles, screen⟩ := sess
+  obtain ⟨me, tiles, screen, map, search⟩ := sess
   simp at hs; subst hs
-  cases op <;> simp [perform, onScreen, Screen.isBusy] at h <;> subst h <;> simp [Session.to] <;>
-    (intro e' k a h₁ h₂ _; exact ⟨h₁, h₂⟩)
+  cases op <;> simp [perform, onScreen, Screen.isBusy, Session.refreshTo] at h <;> subst h <;>
+    simp [Session.to]
+  intro e' k a h₁ h₂ _; exact ⟨h₁, h₂⟩
 
 /-- P12 の画面の側: 更新の結果が分からなくなっても、中身とキーはそのまま持っておく(再送に使う)。 -/
 theorem p12_unknown_keeps {sess : Session P F} {e : Edit} {key : String} {st : Step P F}
     (hs : sess.screen = .updating e key) (h : receive (.loggedIn sess) .unknown = some st) :
     st.state = .loggedIn { sess with screen := .updateUnknown e key false } := by
-  obtain ⟨me, tiles, screen⟩ := sess
+  obtain ⟨me, tiles, screen, map, search⟩ := sess
   simp at hs; subst hs
   simp [receive, onReply] at h; subst h; rfl
 
@@ -394,7 +795,77 @@ theorem offer_depends_on_kind_only (s : State P F) (op₁ op₂ : Op P F)
     (hk : op₁.kind = op₂.kind) : (perform s op₁).isSome = (perform s op₂).isSome := by
   cases op₁ <;> cases op₂ <;> simp [Op.kind] at hk <;>
     cases s <;> simp [perform] <;>
-    (try rename_i s; obtain ⟨me, tiles, screen⟩ := s; cases screen <;> simp [onScreen]) <;>
+    (try rename_i s; obtain ⟨me, tiles, screen, map, search⟩ := s; cases screen <;> simp [onScreen]) <;>
     (try split <;> simp)
+
+/-! ## 範囲の検索(P13): 応答の順序が入れ替わっても、一覧を取り違えない -/
+
+/-- P13(1) 古い応答で一覧を替えない: 検索の応答で状態が変わるなら、それは今の本人が送った、
+    いちばん新しい検索への応答。追い越された検索や、前のセッションで送った検索の応答は、何も変えない。
+    前の本人として送った検索に「本人が変わった」と返っても、今の本人はログアウトしない。 -/
+theorem p13_only_latest {sys : Sys P F} {pre post : List (Effect P)} {q : Query P} {a : String}
+    {r : SearchResult F} {st : Step P F} (h : Reachable ok sys)
+    (hfl : sys.inflight = pre ++ .search q a :: post)
+    (hst : receive sys.app (.searched q.seq r) = some st) (hchg : st.state ≠ sys.app) :
+    ∃ s, sys.app = .loggedIn s ∧ s.search.pending = some q ∧ a = s.me.id := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  simp only at hfl hchg
+  subst hfl
+  cases app with
+  | loggedIn s =>
+    simp only [Inv] at hinv
+    obtain ⟨-, hs, -, hpend, -, -⟩ := hinv
+    simp only [receive, Option.some.injEq] at hst
+    subst hst
+    unfold onSearched at hchg
+    split at hchg
+    · rename_i q' hq'
+      split at hchg
+      · rename_i hseq
+        obtain ⟨-, hmem⟩ := hpend q' hq'
+        obtain ⟨rfl, rfl⟩ := search_unique hs.1 hmem
+          (show Effect.search q a ∈ pre ++ Effect.search q a :: post by simp) hseq
+        exact ⟨s, rfl, hq', rfl⟩
+      · exact absurd rfl hchg
+    · exact absurd rfl hchg
+  | _ => simp [receive] at hst; subst hst; exact absurd rfl hchg
+
+/-- P13(2) 一覧に出すのは、今の本人に返してよいものだけ。サーバーが本人 `a` への検索に `ok a` を満たす
+    結果しか返さないなら、一覧はいつも `ok 今の本人` を満たす。`ok a` を「`a` が読める地物だけ」とすると
+    (`Authz.canRead` と RLS)、ログインし直したあとに前の本人(たとえば管理者)への検索の応答が届いても、
+    今の本人(たとえば閲覧者)の一覧には出ない。 -/
+theorem p13_shown_ok {sys : Sys P F} {s : Session P F} {q : Query P} {hits : List (Ref × F)}
+    (h : Reachable ok sys) (hs : sys.app.session? = some s)
+    (hl : s.search.shown = some (.found q hits)) : ok s.me.id hits := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  cases app <;> simp [State.session?] at hs <;> subst hs <;> simp only [Inv] at hinv
+  · exact hinv.2.2.2.2.2 q hits hl
+  · exact hinv.2.2.2.2.2 q hits hl
+
+/-- P13(3) 検索中でなければ、一覧は今見えている範囲のもの。応答が送った順に届かなくても、
+    最後に動かした範囲と違う範囲の一覧を、検索が終わったものとして出さない。 -/
+theorem p13_settled {sys : Sys P F} {s : Session P F} (h : Reachable ok sys)
+    (hs : sys.app = .loggedIn s) (hp : s.search.pending = none) :
+    s.search.shown.map (·.query.area) = s.map.area := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  simp only at hs
+  subst hs
+  simp only [Inv] at hinv
+  exact hinv.2.2.2.2.1 hp
+
+/-- P13(4) 検索中なら、その検索は今の本人として飛んでいる。応答はどれも受け取れるので
+    (`replies_accepted`)、応答が届けば検索中を抜ける。 -/
+theorem p13_pending_inflight {sys : Sys P F} {s : Session P F} {q : Query P}
+    (h : Reachable ok sys) (hs : sys.app = .loggedIn s) (hp : s.search.pending = some q) :
+    Effect.search q s.me.id ∈ sys.inflight := by
+  have hinv := reachable_inv h
+  obtain ⟨app, fl⟩ := sys
+  simp only at hs
+  subst hs
+  simp only [Inv] at hinv
+  exact (hinv.2.2.2.1 q hp).2
 
 end App

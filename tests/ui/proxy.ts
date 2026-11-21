@@ -9,7 +9,8 @@ export const faults = [
 	'拒否する(409)',
 	'応答が来ない',
 	'ほかの人の更新が割り込む',
-	'読み込みが遅れる'
+	'読み込みが遅れる',
+	'検索の応答が遅れる'
 ] as const;
 export type Fault = (typeof faults)[number];
 
@@ -35,6 +36,9 @@ const pick = (from: [number, Fault][]): Fault => {
 export function startProxy(port: number, upstream: URL, interfere: (id: number) => Promise<void>) {
 	const counts = new Map<Fault, number>(faults.map((f) => [f, 0]));
 	const log: { at: number; fault: Fault; key: string; reused: boolean }[] = [];
+	/** 範囲の検索: 本人(as)、ブラウザが送った時刻、ブラウザに応答を返した時刻 */
+	const searches: { as: string; sent: number; done: number }[] = [];
+	const delay = () => (Math.random() < 0.3 ? 0 : 300 + Math.random() * 2000);
 	const served = new WeakSet<object>();
 
 	const forward = (
@@ -66,6 +70,31 @@ export function startProxy(port: number, upstream: URL, interfere: (id: number) 
 		served.add(req.socket);
 		const path = new URL(req.url ?? '/', 'http://proxy').pathname;
 		const one = /^\/api\/features\/(\d+)$/.exec(path);
+		if (req.method === 'GET' && path === '/api/features/search') {
+			// サーバーに届く前と、サーバーが答えたあとの両方で遅らせる。応答は送った順に届かなくなり、
+			// ログインし直したあとに、前の本人として送った検索の応答(か、本人違いの 412)が届く
+			counts.set('検索の応答が遅れる', (counts.get('検索の応答が遅れる') ?? 0) + 1);
+			const entry = {
+				as: new URL(req.url ?? '/', 'http://proxy').searchParams.get('as') ?? '',
+				sent: Date.now(),
+				done: 0
+			};
+			searches.push(entry);
+			return void setTimeout(
+				() =>
+					forward(req, res, (up) => {
+						const chunks: Buffer[] = [];
+						up.on('data', (c: Buffer) => chunks.push(c));
+						up.on('end', () =>
+							setTimeout(() => {
+								entry.done = Date.now();
+								res.writeHead(up.statusCode ?? 502, up.headers).end(Buffer.concat(chunks));
+							}, delay())
+						);
+					}),
+				delay()
+			);
+		}
 		if (req.method === 'GET' && one && Math.random() < 0.5) {
 			counts.set('読み込みが遅れる', (counts.get('読み込みが遅れる') ?? 0) + 1);
 			return void setTimeout(() => forward(req, res), 500 + Math.random() * 1500);
@@ -139,6 +168,7 @@ export function startProxy(port: number, upstream: URL, interfere: (id: number) 
 	return {
 		counts,
 		log,
+		searches,
 		close: () => {
 			server.closeAllConnections();
 			server.close();

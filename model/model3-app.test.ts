@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { notify, offers, receive, saving } from '#lib/app/machine.ts';
+import { identityChangedMessage, notify, offers, receive, saving } from '#lib/app/machine.ts';
 import { check } from './check.ts';
 import * as m3 from './model3-app.ts';
 
@@ -194,7 +194,7 @@ const logoutOnNoticeWhileSaving: m3.Machine = {
 	receive,
 	notify: (s, n) =>
 		s.kind === 'ログイン済み'
-			? { state: { kind: '未ログイン', error: '本人違い' }, effects: [] }
+			? { state: { kind: '未ログイン', error: '本人違い', map: s.map }, effects: [] }
 			: notify(s, n)
 };
 
@@ -205,5 +205,127 @@ test('モデル3 対照: 保存中にタイルの本人違いが届いて画面�
 		'確定',
 		'地図の本人が変わった',
 		'k1をサーバーが保存し、成功が届く'
+	]);
+});
+
+const searchProperties = {
+	'応答を捨てない: 前のセッションの検索の応答も、届いた状態で必ず受け取れる': m3.repliesAccepted,
+	'P13 一覧に出している地物は、今の本人が読めるものだけ': m3.p13Readable,
+	'P13 一覧の地物は、一覧が示す範囲のもの': m3.p13Matches,
+	'P13 検索中でなければ、一覧は今見えている範囲のもの': m3.p13Settled,
+	'検索中なら、その検索の応答はまだ届いていない(届けば検索中を抜ける)': m3.searchAwaits,
+	'本人が変わっていないのに、本人違いとして画面を止めない': m3.noFalseIdentityChange
+};
+
+// 検索の範囲は状態が多い(約47万)ので、1回の探索ですべての性質と、探索が届いたところを見る
+test('モデル3(検索) 実装の receive・notify: 応答の順序が入れ替わっても、P13 と応答を捨てないが成り立つ', () => {
+	const failed = new Set<string>();
+	const seen = new Set<string>();
+	const result = check(m3.init, m3.searchSteps, (w) => {
+		for (const [name, property] of Object.entries(searchProperties))
+			if (!property(w)) failed.add(name);
+		const s = m3.session(w.app);
+		if (s?.search.pending && s.search.shown) seen.add('一覧を出したまま検索中');
+		if (w.answered.length >= 2) seen.add('応答が2つ届く途中');
+		if (w.answered.some((r) => r.type === '検索の応答' && r.seq < (s?.search.pending?.seq ?? -1)))
+			seen.add('追い越された検索の応答が届く途中');
+		if (s && w.inflight.some((f) => f.type === '検索する' && f.as !== s.me.id))
+			seen.add('前の本人の検索が飛んでいる');
+		if (w.app.kind === '未ログイン' && w.app.error === identityChangedMessage)
+			seen.add('本人違いで止めた');
+		return failed.size === 0;
+	});
+	expect({ result, failed: [...failed] }).toMatchObject({ result: { ok: true }, failed: [] });
+	expect(result.states).toBeGreaterThan(400_000);
+	expect([...seen].sort()).toEqual(
+		[
+			'一覧を出したまま検索中',
+			'応答が2つ届く途中',
+			'追い越された検索の応答が届く途中',
+			'前の本人の検索が飛んでいる',
+			'本人違いで止めた'
+		].sort()
+	);
+}, 60_000);
+
+/** 番号を見ずに、届いた応答をそのまま一覧に出す(よくある素朴な実装)。 */
+const showEveryReply: m3.Machine = {
+	offers,
+	notify,
+	receive: (s, r) => {
+		if (s.kind !== 'ログイン済み' || r.type !== '検索の応答' || r.result.type !== '見つかった')
+			return receive(s, r);
+		const query = s.search.pending ?? s.search.shown?.query;
+		if (!query) return receive(s, r);
+		const shown = { kind: '見つかった' as const, query, hits: r.result.hits };
+		return { state: { ...s, search: { pending: null, shown } }, effects: [] };
+	}
+};
+
+test('モデル3(検索) 対照: 番号を見ずに届いた応答を出すと、追い越された検索の応答が新しい範囲の一覧になる', () => {
+	const result = check(m3.init, m3.stepsWith(showEveryReply, m3.searching), m3.p13Matches);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace).toEqual([
+		'初期状態',
+		'管理者でログインを押す',
+		'地図をa1に動かす',
+		'管理者のログインが通る',
+		'地図をa2に動かす',
+		'検索0(a1、管理者)にサーバーが答える',
+		'検索0の応答(見つかった)が届く'
+	]);
+});
+
+/** 番号をセッションごとに 0 から振る(番号をセッションの中に持つ素朴な実装)。 */
+const numberPerSession: m3.Machine = {
+	offers,
+	notify,
+	receive: (s, r) =>
+		receive(
+			s.kind === 'ログイン中' && r.type === 'ログイン成功'
+				? { ...s, map: { ...s.map, issued: 0 } }
+				: s,
+			r
+		)
+};
+
+test('モデル3(検索) 対照: 番号をセッションごとに振り直すと、前の本人(管理者)への応答が閲覧者の一覧に出る', () => {
+	const result = check(m3.init, m3.stepsWith(numberPerSession, m3.searching), m3.p13Readable);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace).toEqual([
+		'初期状態',
+		'管理者でログインを押す',
+		'地図をa1に動かす',
+		'管理者のログインが通る',
+		'ログアウトを押す',
+		'検索0(a1、管理者)にサーバーが答える',
+		'ログアウトが通る',
+		'閲覧者でログインを押す',
+		'閲覧者のログインが通る',
+		'検索0の応答(見つかった)が届く'
+	]);
+});
+
+/** 検索の「本人が変わった」を、どの検索への応答かを見ずに信じる。 */
+const trustEveryIdentityChange: m3.Machine = {
+	offers,
+	notify,
+	receive: (s, r) =>
+		s.kind === 'ログイン済み' && r.type === '検索の応答' && r.result.type === '本人が変わった'
+			? { state: { kind: '未ログイン', error: identityChangedMessage, map: s.map }, effects: [] }
+			: receive(s, r)
+};
+
+test('モデル3(検索) 対照: 前の本人の検索への 412 を信じると、本人が変わっていないのに画面を止める', () => {
+	const result = check(
+		m3.init,
+		m3.stepsWith(trustEveryIdentityChange, m3.searching),
+		m3.noFalseIdentityChange
+	);
+	expect(result).toMatchObject({ ok: false });
+	expect(result.ok || result.trace.slice(-3)).toEqual([
+		'閲覧者のログインが通る',
+		'検索0(a1、管理者)の本人がセッションと違う',
+		'検索0の応答(本人が変わった)が届く'
 	]);
 });

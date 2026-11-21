@@ -9,7 +9,7 @@ beforeAll(async () => {
 });
 afterAll(() => browser?.close());
 
-test('P11 本人の一致(ブラウザ): ほかのタブで別の利用者としてログインし直すと、元のタブは地図を読み直した時点で操作を止め、ログイン画面に戻る', async () => {
+test('P11 本人の一致(ブラウザ): ほかのタブで別の利用者としてログインし直すと、元のタブは地図を動かした時点(タイルか範囲の検索が 412 になる)で操作を止め、ログイン画面に戻る', async () => {
 	const context = await browser.newContext({
 		baseURL: process.env.BETTER_AUTH_URL,
 		viewport: { width: 1280, height: 800 }
@@ -24,9 +24,11 @@ test('P11 本人の一致(ブラウザ): ほかのタブで別の利用者とし
 	await tab2.reached('未ログイン');
 	await tab2.login('a-staff');
 
+	// 地図を動かすと、タイルと範囲の検索の両方を、元のタブの本人(B市職員)として送る。先に 412 が届いたほうで止まる
 	const refused: number[] = [];
 	first.on('response', (r) => {
-		if (new URL(r.url()).pathname.startsWith('/tiles/')) refused.push(r.status());
+		const path = new URL(r.url()).pathname;
+		if (path.startsWith('/tiles/') || path === '/api/features/search') refused.push(r.status());
 	});
 	await first.bringToFront();
 	await first.locator('.maplibregl-ctrl-zoom-in').click();

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-import { run, save } from './effects.ts';
+import { run, save, search } from './effects.ts';
 
 const signIn = vi.hoisted(() => vi.fn());
 vi.mock('#lib/auth-client.ts', () => ({ authClient: { signIn: { email: signIn } } }));
@@ -103,4 +103,67 @@ test('P11 保存は、画面が表示している本人として送る(要求の
 	vi.stubGlobal('fetch', fetch);
 	await run({ type: '保存する', draft, as: 'user-1' });
 	expect(fetch).toHaveBeenCalledWith('/api/features?as=user-1', expect.anything());
+});
+
+const query = {
+	seq: 7,
+	area: [
+		[141, 43],
+		[142, 44]
+	] satisfies [[number, number], [number, number]]
+};
+
+test('P13 範囲の検索は、どの検索への応答かを番号で返し、範囲と本人(as)を要求に書く', async () => {
+	const fetch = vi.fn(
+		async () =>
+			new Response(
+				JSON.stringify({
+					type: 'FeatureCollection',
+					features: [{ id: 3, properties: { city: 'B', public: false, name: '地物3', note: '' } }]
+				}),
+				{ status: 200 }
+			)
+	);
+	vi.stubGlobal('fetch', fetch);
+	expect(await run({ type: '検索する', query, as: 'user-1' })).toEqual({
+		type: '検索の応答',
+		seq: 7,
+		result: {
+			type: '見つかった',
+			hits: [{ ref: { id: 3, city: 'B', public: false }, properties: { name: '地物3' } }]
+		}
+	});
+	expect(fetch).toHaveBeenCalledWith(
+		'/api/features/search?bbox=141%2C43%2C142%2C44&as=user-1',
+		expect.anything()
+	);
+});
+
+test.each([
+	['本人違い(412)', async () => new Response('{}', { status: 412 }), '本人が変わった'],
+	['サーバーの失敗', async () => new Response('{}', { status: 500 }), '検索できない'],
+	['形の違う応答', async () => new Response('{"features":[{"id":"x"}]}'), '検索できない'],
+	[
+		'通信が切れた',
+		async () => {
+			throw new TypeError('network');
+		},
+		'検索できない'
+	]
+])('P13 範囲の検索: %s は、番号つきの「%s」', async (_, fetch, type) => {
+	vi.stubGlobal('fetch', fetch);
+	expect(await run({ type: '検索する', query, as: 'u1' })).toEqual({
+		type: '検索の応答',
+		seq: 7,
+		result: { type }
+	});
+});
+
+test('L1 範囲の検索も、応答が来なければタイムアウトで「検索できない」を返す', async () => {
+	vi.stubGlobal('fetch', neverAnswers);
+	expect(await search(query, 'u1', 50)).toEqual({
+		type: '検索の応答',
+		seq: 7,
+		result: { type: '検索できない' }
+	});
 });

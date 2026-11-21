@@ -6,4 +6,4 @@ test('docs/screens.md の状態図は、モデル3の全探索から作った図
 	expect(await readFile('docs/screens.md', 'utf8')).toContain(
 		['```mermaid', stateDiagram().mermaid, '```'].join('\n')
 	);
-}, 30_000);
+}, 60_000);

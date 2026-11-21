@@ -25,6 +25,7 @@
 	import ActionCheckbox from '#lib/ui/ActionCheckbox.svelte';
 	import ActionSelect from '#lib/ui/ActionSelect.svelte';
 	import ActionTextInput from '#lib/ui/ActionTextInput.svelte';
+	import MapArea from '#lib/ui/MapArea.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -127,39 +128,20 @@
 	}
 </script>
 
-{#if !session}
-	<main class="mx-auto mt-24 max-w-sm space-y-4 p-4" data-app={app.kind}>
-		<h1 class="text-xl font-bold">WebGIS 認可の実験</h1>
-		<p class="text-sm text-gray-600">
-			{app.kind === 'ログイン中' ? 'ログインしています…' : 'デモユーザーを選んでログインします。'}
-		</p>
-		<div class="grid grid-cols-2 gap-2">
-			{#each demoUsers as u (u.email)}
-				<ActionButton
-					class="rounded border border-gray-300 px-3 py-2 hover:bg-gray-100"
-					action={actions.ログインを押す}
-					payload={() => ({ email: u.email })}
-				>
-					{u.label}
-				</ActionButton>
-			{/each}
-		</div>
-		{#if app.kind === '未ログイン' && app.error}
-			<p class="text-sm text-red-600">ログインできませんでした: {app.error}</p>
-		{/if}
-	</main>
-{:else}
-	<MapLibre
-		class="h-dvh w-full"
-		style={basemap}
-		center={[141.35, 43.05]}
-		zoom={12}
-		autoloadGlobalCss={false}
-		cursor={screen?.kind === '描画中' ? 'crosshair' : undefined}
-		onclick={onMapClick}
-		onerror={onMapError}
-	>
-		<NavigationControl />
+<!-- 地図はタブのもので、ログインと関係なく出しておく(状態機械の MapView と同じ) -->
+<MapLibre
+	class="h-dvh w-full"
+	style={basemap}
+	center={[141.35, 43.05]}
+	zoom={12}
+	autoloadGlobalCss={false}
+	cursor={screen?.kind === '描画中' ? 'crosshair' : undefined}
+	onclick={onMapClick}
+	onerror={onMapError}
+>
+	<NavigationControl />
+	<MapArea onmoved={(area) => machine.notify({ type: '地図が動いた', area })} />
+	{#if session}
 		<VectorTileSource tiles={[tilesUrl]} minzoom={8} maxzoom={16}>
 			<FillLayer
 				id="feature-fill"
@@ -185,33 +167,59 @@
 				}}
 			/>
 		</VectorTileSource>
-		<GeoJSONSource data={sketch}>
-			<FillLayer filter={isPolygon} paint={{ 'fill-color': '#16a34a', 'fill-opacity': 0.3 }} />
-			<LineLayer filter={isPolygon} paint={{ 'line-color': '#16a34a', 'line-width': 2 }} />
-			<CircleLayer filter={isPoint} paint={{ 'circle-color': '#16a34a', 'circle-radius': 4 }} />
-		</GeoJSONSource>
-		{#if screen?.kind === '閲覧' && screen.selected}
-			<Popup
-				lnglat={screen.selected.at}
-				closeOnClick={false}
-				onclose={() => actions.ポップアップを閉じる?.()}
+	{/if}
+	<GeoJSONSource data={sketch}>
+		<FillLayer filter={isPolygon} paint={{ 'fill-color': '#16a34a', 'fill-opacity': 0.3 }} />
+		<LineLayer filter={isPolygon} paint={{ 'line-color': '#16a34a', 'line-width': 2 }} />
+		<CircleLayer filter={isPoint} paint={{ 'circle-color': '#16a34a', 'circle-radius': 4 }} />
+	</GeoJSONSource>
+	{#if screen?.kind === '閲覧' && screen.selected}
+		<Popup
+			lnglat={screen.selected.at}
+			closeOnClick={false}
+			onclose={() => actions.ポップアップを閉じる?.()}
+		>
+			<dl class="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+				{#each Object.entries(screen.selected.properties) as [key, value] (key)}
+					<dt class="text-gray-500">{labels[key] ?? key}</dt>
+					<dd>{String(value)}</dd>
+				{/each}
+			</dl>
+			<ActionButton
+				class="mt-2 w-full rounded border px-2 py-0.5 text-xs"
+				action={actions.編集を始める}
 			>
-				<dl class="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-					{#each Object.entries(screen.selected.properties) as [key, value] (key)}
-						<dt class="text-gray-500">{labels[key] ?? key}</dt>
-						<dd>{String(value)}</dd>
-					{/each}
-				</dl>
-				<ActionButton
-					class="mt-2 w-full rounded border px-2 py-0.5 text-xs"
-					action={actions.編集を始める}
-				>
-					編集を始める
-				</ActionButton>
-			</Popup>
-		{/if}
-	</MapLibre>
+				編集を始める
+			</ActionButton>
+		</Popup>
+	{/if}
+</MapLibre>
 
+{#if !session}
+	<main
+		class="absolute inset-x-0 top-24 z-10 mx-auto max-w-sm space-y-4 rounded bg-white/95 p-4 shadow"
+		data-app={app.kind}
+	>
+		<h1 class="text-xl font-bold">WebGIS 認可の実験</h1>
+		<p class="text-sm text-gray-600">
+			{app.kind === 'ログイン中' ? 'ログインしています…' : 'デモユーザーを選んでログインします。'}
+		</p>
+		<div class="grid grid-cols-2 gap-2">
+			{#each demoUsers as u (u.email)}
+				<ActionButton
+					class="rounded border border-gray-300 px-3 py-2 hover:bg-gray-100"
+					action={actions.ログインを押す}
+					payload={() => ({ email: u.email })}
+				>
+					{u.label}
+				</ActionButton>
+			{/each}
+		</div>
+		{#if app.kind === '未ログイン' && app.error}
+			<p class="text-sm text-red-600">ログインできませんでした: {app.error}</p>
+		{/if}
+	</main>
+{:else}
 	<section
 		class="absolute top-3 left-3 z-10 w-72 space-y-2 rounded bg-white/95 p-3 text-sm shadow"
 		data-app={app.kind}
@@ -344,6 +352,42 @@
 			{/if}
 		{:else}
 			<p>{session.screen.kind}…</p>
+		{/if}
+	</section>
+
+	<!-- 見えている範囲の地物の一覧。検索中は、前の一覧を薄くして出しておく(どの範囲の一覧かは data-search-area) -->
+	<section
+		class="absolute bottom-8 left-3 z-10 max-h-64 w-72 overflow-auto rounded bg-white/95 p-3 text-sm shadow"
+		data-search={app.kind === 'ログアウト中'
+			? '止めている'
+			: session.search.pending
+				? '検索中'
+				: (session.search.shown?.kind ?? 'なし')}
+		data-search-area={session.search.shown && JSON.stringify(session.search.shown.query.area)}
+	>
+		<h2 class="font-bold">
+			この範囲の地物
+			{#if session.search.pending}<span class="text-xs font-normal text-gray-500">(更新中…)</span
+				>{/if}
+		</h2>
+		{#if session.search.shown?.kind === '見つかった'}
+			<div class:opacity-50={session.search.pending || app.kind === 'ログアウト中'}>
+				<p class="text-xs text-gray-500">{session.search.shown.hits.length} 件</p>
+				<ul>
+					{#each session.search.shown.hits as h (h.ref.id)}
+						<li data-hit-city={h.ref.city} data-hit-public={h.ref.public}>
+							{String(h.properties.name)}
+							<span class="text-xs text-gray-500"
+								>({h.ref.city}市・{h.ref.public ? '公開' : '非公開'})</span
+							>
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{:else if session.search.shown?.kind === '検索できない'}
+			<p class="text-red-600">一覧を読み込めませんでした。地図を動かすと読み直します。</p>
+		{:else if !session.search.pending}
+			<p class="text-gray-500">地図を動かすと、見えている範囲の地物を表示します。</p>
 		{/if}
 	</section>
 {/if}

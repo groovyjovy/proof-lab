@@ -58,6 +58,8 @@ try {
 		observed.set(kind, (observed.get(kind) ?? 0) + 1);
 		if (snapshot('panel')?.identityChanged)
 			observed.set('本人違いで止めた', (observed.get('本人違いで止めた') ?? 0) + 1);
+		const list = snapshot('listing')?.state;
+		if (list) observed.set(`一覧/${list}`, (observed.get(`一覧/${list}`) ?? 0) + 1);
 		if (snapshot('popup')) {
 			const popup = `ポップアップ/${snapshot('panel')?.role}`;
 			observed.set(popup, (observed.get(popup) ?? 0) + 1);
@@ -106,6 +108,26 @@ try {
 		proxy.log.length
 	);
 
+	// 検索の応答の追い越し: 先に送った検索の応答が、あとから送った検索の応答より遅れて届いた数。
+	// 本人をまたぐ追い越し: ある本人の検索の応答が、別の本人として送った検索よりあとに届いた数
+	const answered = proxy.searches.filter((s) => s.done > 0);
+	const overtaken = answered.filter((a) =>
+		answered.some((b) => b.sent > a.sent && b.done < a.done)
+	).length;
+	const crossed = answered.filter((a) =>
+		answered.some((b) => b.as !== a.as && b.sent > a.sent && b.sent < a.done)
+	).length;
+	console.log(
+		'検索',
+		proxy.searches.length,
+		'/ 追い越された検索の応答',
+		overtaken,
+		'/ 別の本人の検索のあとに届いた応答',
+		crossed
+	);
+	observed.set('追い越された検索の応答', overtaken);
+	observed.set('別の本人の検索のあとに届いた応答', crossed);
+
 	const unobserved = [
 		'ログイン済み/保存中',
 		'ログイン済み/再送中',
@@ -114,7 +136,11 @@ try {
 		'ログイン済み/更新中',
 		'ログイン済み/更新結果不明',
 		'ログイン済み/競合',
-		...['admin', 'a-staff', 'b-staff', 'viewer'].map((role) => `ポップアップ/${role}`)
+		...['admin', 'a-staff', 'b-staff', 'viewer'].map((role) => `ポップアップ/${role}`),
+		'一覧/検索中',
+		'一覧/見つかった',
+		'追い越された検索の応答',
+		'別の本人の検索のあとに届いた応答'
 	].filter((k) => (observed.get(k) ?? 0) < minObserved);
 	if (unobserved.length) console.log(`${minObserved} 回未満しか観測できなかった画面`, unobserved);
 	if (rows[0].duplicated) console.log('P10 が破れた: 同じ形の地物が二重にできた');

@@ -36,7 +36,11 @@ const popup = extract((s) => {
 
 const enabledButtons = extract((s) =>
 	[...s.document.querySelectorAll('button')]
-		.filter((b) => !b.matches(':disabled') && b.getBoundingClientRect().width > 0)
+		.filter((b) => {
+			// 地図の端でクリックすると、ポップアップが画面の外にはみ出す。画面の外のボタンは押さない
+			const r = b.getBoundingClientRect();
+			return !b.matches(':disabled') && r.width > 0 && r.top >= 0 && r.left >= 0;
+		})
 		.map((b) => {
 			const r = b.getBoundingClientRect();
 			return {
@@ -59,6 +63,32 @@ const map = extract((s) => {
 		: null;
 });
 
+const listing = extract((s) => {
+	const l = s.document.querySelector('[data-search]');
+	if (!l) return null;
+	return {
+		state: l.getAttribute('data-search'),
+		area: l.getAttribute('data-search-area'),
+		bounds: s.document.querySelector('.maplibregl-map')?.getAttribute('data-bounds') ?? null,
+		hits: [...l.querySelectorAll('li')].map((li) => ({
+			city: li.getAttribute('data-hit-city'),
+			public: li.getAttribute('data-hit-public') === 'true'
+		}))
+	};
+});
+
+const zoomButtons = extract((s) =>
+	[...s.document.querySelectorAll('.maplibregl-ctrl-zoom-in, .maplibregl-ctrl-zoom-out')].map(
+		(b) => {
+			const r = b.getBoundingClientRect();
+			return {
+				fingerprint: getFingerprint(b),
+				point: { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+			};
+		}
+	)
+);
+
 const saving = () => panel.current?.screen === '保存中' || panel.current?.screen === '再送中';
 const busy = () =>
 	['保存中', '再送中', '読込中', '更新中'].includes(panel.current?.screen ?? '') &&
@@ -73,6 +103,9 @@ const press = (text: string) =>
 			.filter((b) => b.text.startsWith(text))
 			.map(({ fingerprint, point }) => ({ Click: { fingerprint, point } }))
 	);
+const zoom = actions(() =>
+	zoomButtons.current.map(({ fingerprint, point }) => ({ Click: { fingerprint, point } }))
+);
 const clickMap = actions(() =>
 	map.current
 		? [
@@ -96,6 +129,12 @@ export const explore = weighted([
 	[2, press('読み直す')],
 	[1, press('やめる')],
 	[1, press('取消')],
+	[3, zoom],
+	[1, press('ログアウト')],
+	...['管理者', 'A市職員', 'B市職員', '閲覧者'].map((name): [number, typeof zoom] => [
+		1,
+		press(name)
+	]),
 	[3, clicks],
 	[1, reload.when(() => !busy())],
 	[1, actions(() => ['Wait' as const])]
@@ -169,3 +208,17 @@ export const P2_P7_閲覧者には公開の地物だけが出て所有者名は�
 		!popup.current ||
 		(!('所有者名' in popup.current) && popup.current['公開'] === 'true')
 );
+
+/** 読める地物(認可の仕様 spec/Spec/Authz.lean の readCond と同じ判断) */
+const readable = (role: string, hit: { city: string | null; public: boolean }) =>
+	role === 'admin' || (role === 'viewer' && hit.public) || hit.city === cityOfStaff[role];
+
+export const P13_一覧には今の本人が読める地物だけが出る = always(() => {
+	const r = role();
+	return !r || !listing.current || listing.current.hits.every((h) => readable(r, h));
+});
+
+export const P13_検索中でなければ一覧は今見えている範囲のもの = always(() => {
+	const l = listing.current;
+	return !l || (l.state !== '見つかった' && l.state !== '検索できない') || l.area === l.bounds;
+});

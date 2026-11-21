@@ -23,7 +23,8 @@ const replyTypes: Record<Reply['type'], true> = {
 	本人が変わった: true,
 	読み込めた: true,
 	読み込めない: true,
-	競合した: true
+	競合した: true,
+	検索の応答: true
 };
 const isReply = (e: Event): e is Reply => e.type in replyTypes;
 const next = (s: State, e: Event) =>
