@@ -2,12 +2,21 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseArgs } from 'node:util';
 import pg from 'pg';
 import { restoreSeed } from '../../db/seed.ts';
 import { startDevServer } from '../../scripts/dev-server.ts';
 import { startProxy } from './proxy.ts';
 
-const timeLimit = process.argv[2] ?? '3m';
+// 乱数の探索(フェーズの区切りに流す)。毎回の合否には使わない。性質が破れたら失敗にし、
+// 届かなかった場面(空振り)は報告だけする。種と Bombadil のトレースがあれば、同じ探索をもう一度流せる。
+const { values, positionals } = parseArgs({
+	allowPositionals: true,
+	options: { seed: { type: 'string' }, reproduce: { type: 'string' } }
+});
+const timeLimit = positionals[0] ?? '3m';
+const seed = Number(values.seed ?? Math.floor(Math.random() * 2 ** 31));
+if (!Number.isInteger(seed)) throw new Error(`--seed は整数: ${values.seed}`);
 const upstream = new URL('http://localhost:5198');
 const origin = new URL('http://localhost:5197');
 const minObserved = 3;
@@ -16,7 +25,7 @@ const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL }
 await admin.connect();
 await restoreSeed(admin);
 
-const proxy = startProxy(Number(origin.port), upstream, async (id) => {
+const proxy = startProxy(Number(origin.port), upstream, seed, async (id) => {
 	await admin.query(
 		`with u as (update feature set version = version + 1, note = note || '(ほかの人)'
 		            where id = $1 returning id, version)
@@ -39,7 +48,7 @@ try {
 			'--headless',
 			'--width=1280',
 			'--height=800',
-			`--time-limit=${timeLimit}`,
+			values.reproduce ? `--reproduce=${values.reproduce}` : `--time-limit=${timeLimit}`,
 			`--output-path=${out}`,
 			origin.href,
 			'tests/ui/app.spec.ts'
@@ -128,7 +137,7 @@ try {
 	observed.set('追い越された検索の応答', overtaken);
 	observed.set('別の本人の検索のあとに届いた応答', crossed);
 
-	const unobserved = [
+	const unreached = [
 		'ログイン済み/保存中',
 		'ログイン済み/再送中',
 		'ログイン済み/結果不明',
@@ -142,11 +151,17 @@ try {
 		'追い越された検索の応答',
 		'別の本人の検索のあとに届いた応答'
 	].filter((k) => (observed.get(k) ?? 0) < minObserved);
-	if (unobserved.length) console.log(`${minObserved} 回未満しか観測できなかった画面`, unobserved);
+	if (unreached.length)
+		console.log(
+			`${minObserved} 回未満しか観測できなかった場面(この探索では、ここに関わる性質をほとんど確かめていない)`,
+			unreached
+		);
 	if (rows[0].duplicated) console.log('P10 が破れた: 同じ形の地物が二重にできた');
 	if (rows[0].untracked) console.log('P12 が破れた: 版とキーの数が合わない地物がある');
-	process.exitCode =
-		exitCode || unobserved.length || rows[0].duplicated || rows[0].untracked ? 1 : 0;
+	console.log(
+		`\n種 ${seed}。同じ探索をもう一度流す: pnpm test:ui --seed ${seed} --reproduce ${join(out, 'trace.jsonl')}`
+	);
+	process.exitCode = exitCode || rows[0].duplicated || rows[0].untracked ? 1 : 0;
 } finally {
 	stopServer();
 	proxy.close();

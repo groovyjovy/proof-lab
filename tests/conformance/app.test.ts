@@ -10,6 +10,7 @@ import {
 	type State
 } from '#lib/app/machine.ts';
 import { startOracle, type Oracle } from '../../scripts/spec-oracle.ts';
+import { exploring, seed } from '../seed.ts';
 import { applyEvent, normalize, snapshot, type Event } from './implementation.ts';
 
 let oracle: Oracle;
@@ -201,6 +202,16 @@ function searchCoverage(before: State, e: Event, after: State | undefined, seen:
 	seen.add(`一覧: ${e.reply.result.type}`);
 }
 
+/**
+ * 生成した列が、狙った場面に届いたか(空振りの確認)。決まった種で流す合否では、届かなければ失敗にする
+ * (生成器がその場面に届かなくなった、という確かな知らせになる)。探索では、届かなかった場面を報告する。
+ */
+function reached(what: string, seen: Set<string>, expected: string[]) {
+	if (!exploring) return expect([...seen].sort()).toEqual([...expected].sort());
+	const missed = expected.filter((e) => !seen.has(e));
+	if (missed.length) console.log(`この種では届かなかった${what}(種 ${seed}):`, missed);
+}
+
 const kindOf = (s: State) =>
 	s.kind === 'ログイン済み'
 		? `${s.kind}/${s.screen.kind}`
@@ -226,25 +237,21 @@ test('実装の状態機械は、Lean の仕様(spec/Spec/App.lean)と同じ状�
 		}),
 		{ numRuns: 2000 }
 	);
-	expect([...searchSeen].sort()).toEqual(
-		[
-			'ログインしていないときに届いた',
-			'古い応答を捨てた',
-			'本人違いで止めた',
-			'一覧: 見つかった',
-			'一覧: 検索できない',
-			'一覧: 本人が変わった'
-		].sort()
-	);
+	reached('検索の応答', searchSeen, [
+		'ログインしていないときに届いた',
+		'古い応答を捨てた',
+		'本人違いで止めた',
+		'一覧: 見つかった',
+		'一覧: 検索できない',
+		'一覧: 本人が変わった'
+	]);
 	const loggedIn = ['閲覧', '描画中', '保存中', '再送中', '結果不明'];
 	const editing = ['読込中', '編集中', '更新中', '更新結果不明', '競合'];
 	const loggingOut = ['閲覧', '描画中', '結果不明', '編集中', '更新結果不明', '競合'];
-	expect([...visited].sort()).toEqual(
-		[
-			'未ログイン',
-			'ログイン中',
-			...[...loggedIn, ...editing].map((v) => `ログイン済み/${v}`),
-			...loggingOut.map((v) => `ログアウト中/${v}`)
-		].sort()
-	);
+	reached('画面の状態', visited, [
+		'未ログイン',
+		'ログイン中',
+		...[...loggedIn, ...editing].map((v) => `ログイン済み/${v}`),
+		...loggingOut.map((v) => `ログアウト中/${v}`)
+	]);
 });

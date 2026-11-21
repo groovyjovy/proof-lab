@@ -34,6 +34,7 @@ export default defineConfig({
 					environment: 'node',
 					include: ['tests/conformance/**/*.test.ts'],
 					globalSetup: ['tests/conformance/global-setup.ts'],
+					setupFiles: ['tests/conformance/setup.ts'],
 					testTimeout: 120_000,
 					hookTimeout: 600_000
 				}
