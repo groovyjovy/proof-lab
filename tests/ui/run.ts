@@ -102,6 +102,9 @@ try {
 		const kind = [snapshot('panel')?.app, snapshot('panel')?.screen].filter(Boolean).join('/');
 		observed.set(kind, (observed.get(kind) ?? 0) + 1);
 		const p = snapshot('panel');
+		if (p?.mapLag) observed.set('地図へ反映中', (observed.get('地図へ反映中') ?? 0) + 1);
+		if (p?.boundaryVerified)
+			observed.set('隣の区画の版を確認', (observed.get('隣の区画の版を確認') ?? 0) + 1);
 		if (['a-staff', 'b-staff'].includes(p?.role) && p.canEdit === false) {
 			const scene = p.screen === '描画中' ? '編集中の下書きが編集不可' : '市職員が編集不可';
 			observed.set(scene, (observed.get(scene) ?? 0) + 1);
@@ -121,6 +124,7 @@ try {
 		for (const v of entry.violations ?? []) violated.set(v.name, (violated.get(v.name) ?? 0) + 1);
 	}
 
+	// 境界の一括確定は一つのキーで2区画の版を揃える。区画ごとの版とキーの個数は通常更新で比較する。
 	const { rows } = await admin.query(
 		`select count(*)::int as keyed,
 			(select count(*)::int from (
@@ -129,7 +133,8 @@ try {
 			) d) as duplicated,
 			(select count(*)::int from feature_update) as updates,
 			(select count(*)::int from feature f
-			 where f.version <> (select count(*) from feature_update u where u.feature_id = f.id)) as untracked
+			 where not exists (select 1 from boundary_pair p where f.id in (p.left_id, p.right_id))
+			   and f.version <> (select count(*) from feature_update u where u.feature_id = f.id)) as untracked
 		 from feature where request_key is not null`
 	);
 
@@ -139,7 +144,7 @@ try {
 	console.log(
 		'効いた更新',
 		rows[0].updates,
-		'/ 版とキーの数が合わない地物(更新が二重に効いたか、キーなしで効いた)',
+		'/ 共有境界を持たず、版とキーの数が合わない地物',
 		rows[0].untracked
 	);
 	console.log('破れた性質', Object.fromEntries(violated));
@@ -198,7 +203,9 @@ try {
 		'追い越された検索の応答',
 		'別の本人の検索のあとに届いた応答',
 		'市職員が編集不可',
-		'編集中の下書きが編集不可'
+		'編集中の下書きが編集不可',
+		'地図へ反映中',
+		'隣の区画の版を確認'
 	].filter((k) => (observed.get(k) ?? 0) < minObserved);
 	if (unreached.length)
 		console.log(

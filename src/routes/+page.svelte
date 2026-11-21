@@ -306,6 +306,29 @@
 			<ActionTextInput action={actions.備考を変える} payload={(note) => ({ note })} value={e.note}>
 				備考
 			</ActionTextInput>
+			{#if e.boundary}
+				{@const b = e.boundary}
+				<p
+					data-boundary-neighbor={b.neighborId}
+					data-neighbor-confirmed={b.verifiedVersion === b.neighborVersion}
+				>
+					{b.verifiedVersion === b.neighborVersion
+						? '隣の区画の版を確認しました。'
+						: '共有境界を動かすには、地図で隣の区画をクリックしてください。'}
+				</p>
+				<ActionSelect
+					action={actions.境界を動かす}
+					payload={(value) => ({ position: Number(value) })}
+					value={String(b.draft ?? b.position)}
+					options={[
+						['0', '西寄り'],
+						['1', '中央'],
+						['2', '東寄り']
+					]}
+				>
+					共有境界の位置
+				</ActionSelect>
+			{/if}
 			<div class="flex gap-2">
 				<ActionButton
 					class="flex-1 rounded bg-green-600 px-3 py-1.5 text-white"

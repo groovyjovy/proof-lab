@@ -1,4 +1,5 @@
 import { canRead, canWrite, type City, type Me } from '#lib/domain.ts';
+import { isBoundaryPosition, type BoundaryPosition, type BoundarySnapshot } from '#lib/boundary.ts';
 
 export type Point = [lng: number, lat: number];
 export type Draft = { key: string; city: City; public: boolean; points: Point[] };
@@ -6,7 +7,17 @@ export type FeatureRef = { id: number; city: City; public: boolean; version?: nu
 export type Hit = { ref: FeatureRef; properties: Record<string, unknown> };
 export type Selected = { at: Point } & Hit;
 /** 編集中の値。版は、サーバーから読み込んだときのもの(P4)。 */
-export type Edit = { ref: FeatureRef; version: number; name: string; note: string };
+export type BoundaryEdit = BoundarySnapshot & {
+	verifiedVersion: number | null;
+	draft: BoundaryPosition | null;
+};
+export type Edit = {
+	ref: FeatureRef;
+	version: number;
+	name: string;
+	note: string;
+	boundary?: BoundaryEdit;
+};
 
 export type Screen =
 	| { kind: '閲覧'; selected: Selected | null }
@@ -71,6 +82,7 @@ export type Op =
 	| { type: '編集を始める' }
 	| { type: '名前を変える'; name: string }
 	| { type: '備考を変える'; note: string }
+	| { type: '境界を動かす'; position: number }
 	| { type: '編集を保存'; key: string }
 	| { type: '読み直す' };
 
@@ -179,6 +191,20 @@ const reloadRef = ({ id, city, public: visible }: FeatureRef): FeatureRef => ({
 	public: visible
 });
 
+const verifiedBoundary = (b: BoundaryEdit) => b.verifiedVersion === b.neighborVersion;
+
+function verifyNeighbor(b: BoundaryEdit, feature: Hit | null): BoundaryEdit {
+	if (feature?.ref.id !== b.neighborId) return b;
+	const version = feature.ref.version;
+	return version === b.neighborVersion
+		? { ...b, verifiedVersion: version }
+		: { ...b, verifiedVersion: null, draft: null };
+}
+
+function resetBoundary(e: Edit): Edit {
+	return e.boundary ? { ...e, boundary: { ...e.boundary, verifiedVersion: null, draft: null } } : e;
+}
+
 export function offers(s: State): Offers {
 	switch (s.kind) {
 		case '未ログイン':
@@ -264,10 +290,31 @@ function onScreen(s: LoggedIn): Offers {
 			};
 		case '編集中': {
 			const e = v.edit;
+			const b = e.boundary;
+			const writable = canWrite(s.me, e.ref);
 			return {
+				地図をクリック: b
+					? (op) => to({ ...v, edit: { ...e, boundary: verifyNeighbor(b, op.feature) } })
+					: undefined,
 				名前を変える: (op) => to({ ...v, edit: { ...e, name: op.name } }),
 				備考を変える: (op) => to({ ...v, edit: { ...e, note: op.note } }),
-				編集を保存: canWrite(s.me, e.ref) ? (op) => update(e, op.key) : undefined,
+				境界を動かす:
+					b && writable && verifiedBoundary(b)
+						? ({ position }) =>
+								to({
+									...v,
+									edit: {
+										...e,
+										boundary: isBoundaryPosition(position)
+											? { ...b, draft: position === b.position ? null : position }
+											: b
+									}
+								})
+						: undefined,
+				編集を保存:
+					writable && (!b || b.draft === null || verifiedBoundary(b))
+						? (op) => update(e, op.key)
+						: undefined,
 				読み直す: v.stale ? () => load(reloadRef(e.ref)) : undefined,
 				取消: () => to({ kind: '閲覧', selected: null })
 			};
@@ -357,7 +404,7 @@ function onReply(s: LoggedIn, r: Reply): Step | undefined {
 					return only({
 						...s,
 						mapLag: s.mapLag?.[0] === id ? null : s.mapLag,
-						screen: { kind: '編集中', edit: r.edit, notice: null, stale: false }
+						screen: { kind: '編集中', edit: resetBoundary(r.edit), notice: null, stale: false }
 					});
 				}
 				case '読み込めない':

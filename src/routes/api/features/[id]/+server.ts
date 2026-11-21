@@ -10,7 +10,7 @@ const idOf = (param: string) => {
 };
 
 export const GET: RequestHandler = async ({ locals, params, url }) =>
-	featureResponse(await requireActor(locals, url).getFeature(idOf(params.id)));
+	featureResponse(await requireActor(locals, url).getFeature(idOf(params.id), true));
 
 export const PUT: RequestHandler = async ({ locals, params, request, url }) => {
 	const id = idOf(params.id);

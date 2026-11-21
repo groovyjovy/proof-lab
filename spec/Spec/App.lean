@@ -1,5 +1,6 @@
 import Spec.Domain
 import Spec.Authz
+import Spec.Boundary
 
 /-
 画面の状態機械の仕様。TypeScript の実装(src/lib/app/machine.ts)はこれを写したもので、
@@ -72,7 +73,23 @@ structure Edit where
   version : Nat
   name : String
   note : String
+  boundary : Option BoundaryEdit := none
   deriving DecidableEq, Repr
+
+def Edit.resetBoundary (e : Edit) : Edit :=
+  { e with boundary := e.boundary.map fun b => { b with draft := none, verifiedVersion := none } }
+
+def Edit.boundaryPermitsSave (e : Edit) : Prop :=
+  ∀ b, e.boundary = some b → b.draft.isSome → b.verified
+
+instance (e : Edit) : Decidable e.boundaryPermitsSave := by
+  unfold Edit.boundaryPermitsSave
+  cases e.boundary with
+  | none => exact isTrue (by simp)
+  | some b =>
+    by_cases h : b.draft.isSome → b.verified
+    · exact isTrue (by simpa using h)
+    · exact isFalse (by simpa using h)
 
 inductive Screen (P F : Type) where
   | view (selected : Option (Selected P F))
@@ -126,13 +143,14 @@ inductive Op (P F : Type) where
   | startEdit
   | editName (name : String)
   | editNote (note : String)
+  | moveBoundary (position : Nat)
   | saveEdit (key : String)
   | reload
 
 inductive OpKind where
   | pressLogin | pressLogout | clickMap | closePopup | startDrawing
   | chooseCity | choosePublic | commit | cancel | resend
-  | startEdit | editName | editNote | saveEdit | reload
+  | startEdit | editName | editNote | moveBoundary | saveEdit | reload
   deriving DecidableEq, Repr
 
 def Op.kind {P F : Type} : Op P F → OpKind
@@ -149,6 +167,7 @@ def Op.kind {P F : Type} : Op P F → OpKind
   | .startEdit => .startEdit
   | .editName _ => .editName
   | .editNote _ => .editNote
+  | .moveBoundary _ => .moveBoundary
   | .saveEdit _ => .saveEdit
   | .reload => .reload
 
@@ -285,6 +304,14 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
       some (s.to (.view ((feature.filter fun (ref, _) => canReadFeature s.me ref).map
         fun (ref, props) => ⟨pos, ref, props⟩)))
     | .drawing d failed => some (s.to (.drawing { d with points := d.points ++ [pos] } failed))
+    | .editing e failed stale =>
+      match e.boundary with
+      | some b =>
+        let verified := match feature with
+          | some (r, _) => b.verify r.id r.version
+          | none => b
+        some (s.to (.editing { e with boundary := some verified } failed stale))
+      | none => none
     | _ => none
   | .closePopup =>
     match s.screen with
@@ -333,10 +360,21 @@ def onScreen (s : Session P F) : Op P F → Option (Step P F)
     match s.screen with
     | .editing e failed stale => some (s.to (.editing { e with note } failed stale))
     | _ => none
+  | .moveBoundary position =>
+    match s.screen with
+    | .editing e failed stale =>
+      match e.boundary with
+      | some b =>
+        if b.verified ∧ canEditFeature s.me e.ref then
+          some (s.to (.editing { e with boundary := some (b.move position) } failed stale))
+        else none
+      | none => none
+    | _ => none
   | .saveEdit key =>
     match s.screen with
     | .editing e _ _ =>
-      if canEditFeature s.me e.ref then some (s.to (.updating e key false) [.update e key s.me.id])
+      if canEditFeature s.me e.ref ∧ e.boundaryPermitsSave then
+        some (s.to (.updating e key false) [.update e key s.me.id])
       else none
     | _ => none
   | .reload =>
@@ -388,7 +426,7 @@ def onReply (s : Session P F) : Reply F → Option (Step P F)
     match s.screen with
     | .loading ref =>
       if ref.matchesLoad e then
-        some ({ s with mapLag := s.mapLag.filter (·.1 != ref.id) }.to (.editing e false false))
+        some ({ s with mapLag := s.mapLag.filter (·.1 != ref.id) }.to (.editing e.resetBoundary false false))
       else
         some ({ s with mapLag := some (ref.id, e.version) }.refreshTo (.view none))
     | _ => none

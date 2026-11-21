@@ -20,7 +20,12 @@ const panel = extract((s) => {
 					text: b.textContent?.trim() ?? '',
 					disabled: b.matches(':disabled')
 				})),
-				citySelectEnabled: p.querySelector('select:enabled') !== null,
+				citySelectEnabled:
+					p.getAttribute('data-screen') === '描画中' && p.querySelector('select:enabled') !== null,
+				boundarySelectEnabled:
+					p.getAttribute('data-screen') === '編集中' && p.querySelector('select:enabled') !== null,
+				boundaryVerified: p.querySelector('[data-neighbor-confirmed="true"]') !== null,
+				mapLag: p.querySelector('[data-map-lag]') !== null,
 				stale: p.querySelector('[data-stale]') !== null,
 				applied: p.getAttribute('data-update-applied') === 'true',
 				identityChanged: p.textContent?.includes('別の利用者としてログインした') ?? false
@@ -205,6 +210,10 @@ export const P15_編集不可では新しい保存を送れない = always(
 
 export const 市を選べるのは管理者だけ = always(
 	() => displayedRole() === 'admin' || !panel.current?.citySelectEnabled
+);
+
+export const P17_隣の版を確認すると境界を動かせる = always(
+	() => !panel.current?.boundarySelectEnabled || panel.current.boundaryVerified
 );
 
 const cityOfStaff: Record<string, string> = { 'a-staff': 'A', 'b-staff': 'B' };

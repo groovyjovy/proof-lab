@@ -6,7 +6,7 @@ import { chromium, type Browser } from 'playwright-core';
 import { restoreSeed, seedFeatures } from '../db/seed.ts';
 import { stateDiagram } from '../model/state-diagram.ts';
 import { startDevServer } from './dev-server.ts';
-import { openApp, roles, userOf, type App, type Role } from './driver.ts';
+import { clickBoundarySide, openApp, roles, userOf, type App, type Role } from './driver.ts';
 
 const origin = 'http://localhost:5196';
 
@@ -125,6 +125,62 @@ const scenarios: Record<string, { draws: boolean; run: (c: Context) => Promise<v
 			expect200(await other.save('保存する'));
 			await app.page.locator('[data-stale]').waitFor();
 			await shot('ほかの人が更新した。打った備考は残っている');
+		}
+	},
+	'shared-boundary': {
+		draws: false,
+		async run({ app, role, shot }) {
+			if (role !== 'admin' && role !== 'a-staff')
+				throw new Error('shared-boundary は admin または a-staff で流す');
+			await app.login(role);
+			const popup = app.page.locator('.maplibregl-popup');
+			const select = app.page.getByRole('combobox', { name: '共有境界の位置' });
+			const start = async (version: number) => {
+				const marker = popup.getByText(String(version), { exact: true });
+				for (let i = 0; i < 20 && !(await marker.count()); i++) {
+					await clickBoundarySide(app.page, 'west');
+					await marker.waitFor({ timeout: 500 }).catch(() => {});
+				}
+				await marker.waitFor();
+				await popup.getByText('境界編集 · 西区画', { exact: true }).waitFor();
+				await app.press('編集を始める');
+				await app.reached('ログイン済み/編集中');
+			};
+			const verifyEast = async () => {
+				for (let i = 0; i < 20 && !(await select.isEnabled()); i++) {
+					await clickBoundarySide(app.page, 'east');
+					await app.page
+						.locator('[data-neighbor-confirmed="true"]')
+						.waitFor({ timeout: 500 })
+						.catch(() => {});
+				}
+				await app.page.locator('[data-neighbor-confirmed="true"]').waitFor();
+			};
+			await start(0);
+			await verifyEast();
+			await shot('両区画を版0で確認');
+			const { user } = await (await app.page.request.get('/api/auth/get-session')).json();
+			const north = '/tiles/12/3656/1503';
+			const old = await app.page.request.get(`${north}?as=${encodeURIComponent(user.id)}`);
+			expect200(old.status());
+			const body = await old.body();
+			const isNorth = (url: URL) => url.pathname === north;
+			await app.page.route(isNorth, (route) =>
+				route.fulfill({ body, contentType: 'application/vnd.mapbox-vector-tile' })
+			);
+			await select.selectOption('2');
+			expect200(await app.save('保存する'));
+			await app.reached('ログイン済み/閲覧');
+			await start(1);
+			await clickBoundarySide(app.page, 'east');
+			if (!(await select.isDisabled())) throw new Error('旧版の隣接区画で共有境界を動かせました');
+			await shot('南タイルは版1、北タイルは版0。共有境界の操作は無効');
+			await app.page.unroute(isNorth);
+			await app.page.reload();
+			await app.reached('ログイン済み/閲覧');
+			await start(1);
+			await verifyEast();
+			await shot('両区画を版1で確認し、共有境界を操作できる');
 		}
 	},
 	search: {
@@ -264,9 +320,9 @@ try {
 	};
 	await scenario.run({ browser, app, role, shot });
 
-	const diagram = stateDiagram();
-	const missed = diagram.kinds.filter((k) => !shots.some((s) => s.kind === k));
-	if (values.scenario === 'tour' && missed.length) {
+	const diagram = values.scenario === 'tour' ? stateDiagram() : null;
+	const missed = diagram?.kinds.filter((k) => !shots.some((s) => s.kind === k)) ?? [];
+	if (missed.length) {
 		console.log('撮れなかった状態:', missed);
 		process.exitCode = 1;
 	}
@@ -277,7 +333,7 @@ try {
 				`# ${values.scenario}(${role})`,
 				'',
 				`\`${command}\` で ${new Date().toLocaleString('ja-JP')} に撮った。`,
-				...(values.scenario === 'tour'
+				...(diagram
 					? [
 							'',
 							'## 状態図',

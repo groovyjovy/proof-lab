@@ -67,15 +67,28 @@ def refOf? (j : Json) : Except String Ref := do
            isPublic := ← j.getObjValAs? Bool "public"
            version := (j.getObjValAs? Nat "version").toOption }
 
+def boundaryToJson (b : BoundaryEdit) : Json :=
+  Json.mkObj [("neighborId", toJson b.neighborId), ("neighborVersion", toJson b.neighborVersion),
+    ("position", toJson b.position), ("verifiedVersion", nullable (b.verifiedVersion.map toJson)),
+    ("draft", nullable (b.draft.map toJson))]
+
+def boundaryOf? (j : Json) : Except String BoundaryEdit := do
+  return { neighborId := ← j.getObjValAs? Nat "neighborId"
+           neighborVersion := ← j.getObjValAs? Nat "neighborVersion"
+           position := ← j.getObjValAs? Nat "position"
+           verifiedVersion := (j.getObjValAs? Nat "verifiedVersion").toOption
+           draft := (j.getObjValAs? Nat "draft").toOption }
+
 def editToJson (e : Edit) : Json :=
-  Json.mkObj [("ref", refToJson e.ref), ("version", toJson e.version), ("name", toJson e.name),
-    ("note", toJson e.note)]
+  Json.mkObj ([("ref", refToJson e.ref), ("version", toJson e.version), ("name", toJson e.name),
+    ("note", toJson e.note)] ++ (e.boundary.toList.map fun b => ("boundary", boundaryToJson b)))
 
 def editOf? (j : Json) : Except String Edit := do
   return { ref := ← refOf? (← j.getObjVal? "ref")
            version := ← j.getObjValAs? Nat "version"
            name := ← j.getObjValAs? String "name"
-           note := ← j.getObjValAs? String "note" }
+           note := ← j.getObjValAs? String "note"
+           boundary := ((j.getObjVal? "boundary").bind boundaryOf?).toOption }
 
 def areaToJson (a : Area Json) : Json := Json.arr #[a.1, a.2]
 
@@ -245,6 +258,7 @@ def opKindName : OpKind → String
   | .startEdit => "編集を始める"
   | .editName => "名前を変える"
   | .editNote => "備考を変える"
+  | .moveBoundary => "境界を動かす"
   | .saveEdit => "編集を保存"
   | .reload => "読み直す"
 
@@ -267,6 +281,7 @@ def opOf? (j : Json) : Except String (Op Json Json) := do
   | "編集を始める" => return .startEdit
   | "名前を変える" => return .editName (← j.getObjValAs? String "name")
   | "備考を変える" => return .editNote (← j.getObjValAs? String "note")
+  | "境界を動かす" => return .moveBoundary (← j.getObjValAs? Nat "position")
   | "編集を保存" => return .saveEdit (← j.getObjValAs? String "key")
   | "読み直す" => return .reload
   | t => throw s!"知らない操作: {t}"
@@ -313,7 +328,7 @@ def offered (s : S) : List String :=
   let samples : List (Op Json Json) :=
     [.pressLogin "", .pressLogout, .clickMap .null none, .closePopup, .startDrawing "",
       .chooseCity .a, .choosePublic false, .commit, .cancel, .resend, .startEdit, .editName "",
-      .editNote "", .saveEdit "", .reload]
+      .editNote "", .moveBoundary 0, .saveEdit "", .reload]
   samples.filterMap fun op => (perform s op).map fun _ => opKindName op.kind
 
 def snapshot (s : S) (effects : List (Effect Json)) : Json :=

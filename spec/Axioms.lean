@@ -41,6 +41,10 @@ import Spec
 #print axioms App.p15_resend_rejected_unknown
 #print axioms App.p16_start_keeps_tile_version
 #print axioms App.p16_edit_matches_tile
+#print axioms App.boundary_wrong_version_clears_draft
+#print axioms App.boundary_move_requires_verified_version
+#print axioms App.boundary_commit_versions
+#print axioms App.p17_save_boundary_verified
 
 -- 認可とサーバー(spec/Spec/AuthzProofs.lean)
 #print axioms Authz.p1

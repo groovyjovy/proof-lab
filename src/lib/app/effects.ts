@@ -1,4 +1,5 @@
 import { authClient } from '#lib/auth-client.ts';
+import { isBoundaryPosition } from '#lib/boundary.ts';
 import { roleOf, roles, type City, type Me } from '#lib/domain.ts';
 import type { Draft, Edit, Effect, Hit, Notice, Query, Reply, SearchResult } from './machine.ts';
 
@@ -104,17 +105,40 @@ export const load = (id: number, as: string, timeoutMs = saveTimeoutMs) =>
 		{ path: `/api/features/${id}`, as, timeoutMs },
 		async (res) => {
 			if (!res.ok) return { type: '読み込めない' };
-			const p = (await res.json())?.properties ?? {};
+			const feature = await res.json();
+			const p = feature?.properties ?? {};
 			if (
+				feature?.id !== id ||
 				!isCity(p.city) ||
 				typeof p.public !== 'boolean' ||
-				!Number.isInteger(p.version) ||
+				!Number.isSafeInteger(p.version) ||
+				p.version < 0 ||
 				typeof p.name !== 'string' ||
 				typeof p.note !== 'string'
 			)
 				return { type: '読み込めない' };
 			const ref = { id, city: p.city, public: p.public };
-			return { type: '読み込めた', edit: { ref, version: p.version, name: p.name, note: p.note } };
+			const b = p.boundary;
+			const boundary =
+				b &&
+				Number.isSafeInteger(b.neighborId) &&
+				b.neighborId > 0 &&
+				b.neighborId !== id &&
+				Number.isSafeInteger(b.neighborVersion) &&
+				b.neighborVersion >= 0 &&
+				isBoundaryPosition(b.position)
+					? {
+							neighborId: b.neighborId,
+							neighborVersion: b.neighborVersion,
+							position: b.position,
+							verifiedVersion: null,
+							draft: null
+						}
+					: undefined;
+			return {
+				type: '読み込めた',
+				edit: { ref, version: p.version, name: p.name, note: p.note, boundary }
+			};
 		},
 		{ failure: { type: '読み込めない' }, identityChanged }
 	);
@@ -133,7 +157,15 @@ export const update = (edit: Edit, key: string, as: string, timeoutMs = saveTime
 					version: edit.version,
 					city: edit.ref.city,
 					name: edit.name,
-					note: edit.note
+					note: edit.note,
+					boundary:
+						edit.boundary && edit.boundary.draft !== null
+							? {
+									neighborId: edit.boundary.neighborId,
+									neighborVersion: edit.boundary.neighborVersion,
+									position: edit.boundary.draft
+								}
+							: undefined
 				})
 			},
 			timeoutMs

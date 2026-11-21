@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { isBoundaryPosition, type BoundaryMove } from '#lib/boundary.ts';
 import type { City } from '#lib/domain.ts';
 import type { Bbox, FeatureEdit, Geometry, NewFeature } from './authz/index.ts';
 
@@ -74,11 +75,30 @@ export function parseEdit(body: unknown): FeatureEdit {
 		typeof body.note !== 'string'
 	)
 		error(400, '{ key(UUID), version, city, name, note } が必要');
+	let boundary: BoundaryMove | undefined;
+	if (body.boundary !== undefined) {
+		const b = body.boundary;
+		if (
+			!isBody(b) ||
+			!Number.isSafeInteger(b.neighborId) ||
+			Number(b.neighborId) <= 0 ||
+			!Number.isSafeInteger(b.neighborVersion) ||
+			Number(b.neighborVersion) < 0 ||
+			!isBoundaryPosition(b.position)
+		)
+			error(400, '共有境界には隣の区画の ID と版、境界の位置が必要です');
+		boundary = {
+			neighborId: Number(b.neighborId),
+			neighborVersion: Number(b.neighborVersion),
+			position: b.position
+		};
+	}
 	return {
 		key: body.key,
 		version: Number(body.version),
 		city: body.city,
 		name: body.name,
-		note: body.note
+		note: body.note,
+		boundary
 	};
 }

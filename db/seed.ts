@@ -26,18 +26,32 @@ const random = (() => {
 	};
 })();
 
-const square = (lng: number, lat: number, size: number): Geometry => ({
+const rectangle = (west: number, south: number, east: number, north: number): Geometry => ({
 	type: 'Polygon',
 	coordinates: [
 		[
-			[lng - size, lat - size],
-			[lng + size, lat - size],
-			[lng + size, lat + size],
-			[lng - size, lat + size],
-			[lng - size, lat - size]
+			[west, south],
+			[east, south],
+			[east, north],
+			[west, north],
+			[west, south]
 		]
 	]
 });
+
+const square = (lng: number, lat: number, size: number): Geometry =>
+	rectangle(lng - size, lat - size, lng + size, lat + size);
+
+export const seedBoundary = {
+	left: 41,
+	right: 42,
+	west: 141.373,
+	east: 141.397,
+	south: 43.058,
+	north: 43.08,
+	center: 141.385,
+	stride: 0.004
+} as const;
 
 export const seedFeatures: SeedFeature[] = Array.from({ length: 40 }, (_, i) => {
 	const [west, south, east, north] = extent;
@@ -66,6 +80,35 @@ export const seedFeatures: SeedFeature[] = Array.from({ length: 40 }, (_, i) => 
 	};
 });
 
+seedFeatures.push(
+	{
+		id: seedBoundary.left,
+		city: 'A',
+		public: false,
+		name: '境界編集 · 西区画',
+		owner_name: 'デモ区画',
+		geometry: rectangle(
+			seedBoundary.west,
+			seedBoundary.south,
+			seedBoundary.center,
+			seedBoundary.north
+		)
+	},
+	{
+		id: seedBoundary.right,
+		city: 'A',
+		public: false,
+		name: '境界編集 · 東区画',
+		owner_name: 'デモ区画',
+		geometry: rectangle(
+			seedBoundary.center,
+			seedBoundary.south,
+			seedBoundary.east,
+			seedBoundary.north
+		)
+	}
+);
+
 export const seedPassword = 'password1234';
 
 export const seedUsers = [
@@ -90,7 +133,7 @@ export const seedUsers = [
 export async function restoreSeed(client: ClientBase) {
 	await client.query('begin');
 	await client.query('delete from "session"');
-	await client.query('truncate feature_update, feature');
+	await client.query('truncate feature_update, boundary_pair, feature');
 	for (const f of seedFeatures)
 		await client.query(
 			`insert into feature (id, city, public, name, owner_name, geom)
@@ -100,6 +143,12 @@ export async function restoreSeed(client: ClientBase) {
 	await client.query(`select setval(pg_get_serial_sequence('feature', 'id'), $1)`, [
 		seedFeatures.length
 	]);
+	const { left, right, west, south, east, north, center, stride } = seedBoundary;
+	await client.query(
+		`insert into boundary_pair (left_id, right_id, west, south, east, north, center, stride)
+		 values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		[left, right, west, south, east, north, center, stride]
+	);
 	for (const u of seedUsers)
 		await client.query('update "user" set role = $1, "canEdit" = $2 where email = $3', [
 			u.role,

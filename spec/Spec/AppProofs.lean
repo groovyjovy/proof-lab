@@ -945,7 +945,8 @@ theorem offer_depends_on_kind_only (s : State P F) (op₁ op₂ : Op P F)
   cases op₁ <;> cases op₂ <;> simp [Op.kind] at hk <;>
     cases s <;> simp [perform] <;>
     (try rename_i s; obtain ⟨me, tiles, screen, map, search, mapLag⟩ := s; cases screen <;> simp [onScreen]) <;>
-    (try split <;> simp)
+    (try split <;> simp_all) <;>
+    (try split <;> simp_all)
 
 /-! ## 範囲の検索(P13): 応答の順序が入れ替わっても、一覧を取り違えない -/
 
@@ -1206,7 +1207,7 @@ theorem p15_save_edit_permitted {s : Session P F} {op : Op P F} {st : Step P F} 
   all_goals first
     | (obtain ⟨hc, rfl⟩ := h
        simp [Session.to] at hs
-       all_goals (first | (obtain ⟨rfl, -⟩ := hs; exact hc) | exact absurd hs (by simp)))
+       all_goals (first | (obtain ⟨rfl, -⟩ := hs; exact hc.1) | exact absurd hs (by simp)))
     | (subst h; simp_searchTo; simp [Session.to] at hs)
     | (subst h; simp [Session.to] at hs)
 
@@ -1303,5 +1304,16 @@ theorem p16_edit_matches_tile {s s' : Session P F} {ref : Ref} {e actual : Edit}
     subst s'
     rw [hscreen] at hedit
     contradiction
+
+/-- A shared boundary draft leaves the editing screen only after the other rendered version was verified. -/
+theorem p17_save_boundary_verified {s : Session P F} {b : BoundaryEdit} {e : Edit}
+    {failed stale : Bool} {key : String} {st : Step P F}
+    (hview : s.screen = .editing e failed stale)
+    (h : perform (.loggedIn s) (.saveEdit key) = some st)
+    (hb : e.boundary = some b) (hd : b.draft.isSome) :
+    b.verified := by
+  by_cases hp : e.boundaryPermitsSave
+  · exact hp b hb hd
+  · simp [perform, onScreen, hview, hp] at h
 
 end App

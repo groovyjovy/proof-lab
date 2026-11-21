@@ -1,5 +1,5 @@
 import type { Browser, Page, Route } from 'playwright-core';
-import { seedFeatures, seedUsers } from '../db/seed.ts';
+import { seedBoundary, seedFeatures, seedUsers } from '../db/seed.ts';
 
 export type Role = (typeof seedUsers)[number]['user'];
 export const roles = seedUsers.map((u) => u.user);
@@ -28,6 +28,15 @@ export function pixelOf(at: [number, number]) {
 	const [x, y] = mercator(at);
 	const [cx, cy] = mercator(center);
 	return { x: x - cx + viewport.width / 2, y: y - cy + viewport.height / 2 };
+}
+
+export function clickBoundarySide(page: Page, side: 'west' | 'east') {
+	const west = side === 'west';
+	const { x, y } = pixelOf([
+		seedBoundary.center + (west ? -0.009 : 0.009),
+		west ? seedBoundary.south + 0.003 : seedBoundary.north - 0.003
+	]);
+	return page.mouse.click(x, y);
 }
 
 /** パネルや拡大縮小のボタンに隠れない、地図の上にある点の地物 */

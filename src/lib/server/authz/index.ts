@@ -1,7 +1,9 @@
 import { error, json } from '@sveltejs/kit';
 import type { PoolClient } from 'pg';
 import { roleOf, type City, type Me } from '#lib/domain.ts';
+import type { BoundaryMove, BoundarySnapshot } from '#lib/boundary.ts';
 import { pool } from '../db.ts';
+import { boundarySnapshot, moveBoundary } from './boundary.ts';
 
 export type Bbox = [west: number, south: number, east: number, north: number];
 export type Geometry =
@@ -20,6 +22,7 @@ export type PublicFeature = {
 		note: string;
 		version: number;
 		owner_name?: string;
+		boundary?: BoundarySnapshot;
 	};
 	readonly [publicFeature]: true;
 };
@@ -34,7 +37,14 @@ export type NewFeature = {
 	name: string;
 	geometry: Geometry;
 };
-export type FeatureEdit = { key: string; version: number; city: City; name: string; note: string };
+export type FeatureEdit = {
+	key: string;
+	version: number;
+	city: City;
+	name: string;
+	note: string;
+	boundary?: BoundaryMove;
+};
 export type WriteResult =
 	| { ok: true; id: number; version: number }
 	| { ok: false; reason: 'forbidden' | 'conflict' | 'not-found' };
@@ -54,10 +64,15 @@ const isRlsViolation = (e: unknown) =>
 	typeof e === 'object' && e !== null && 'code' in e && e.code === '42501';
 
 export function scopedDb(actorId: string) {
-	async function run<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
+	async function run<T>(
+		work: (c: PoolClient) => Promise<T>,
+		consistentSnapshot = false
+	): Promise<T> {
 		const client = await pool.connect();
 		try {
-			await client.query('begin');
+			await client.query(
+				consistentSnapshot ? 'begin isolation level repeatable read read only' : 'begin'
+			);
 			await client.query(`select set_config('app.user_id', $1, true)`, [actorId]);
 			const result = await work(client);
 			await client.query('commit');
@@ -142,14 +157,17 @@ export function scopedDb(actorId: string) {
 				return { ok: true, id: Number(row.id), version: row.version };
 			}).catch(forbiddenOnRls),
 
-		getFeature: (id: number) =>
+		getFeature: (id: number, includeBoundary = false) =>
 			run(async (c) => {
 				const { rows } = await c.query(
 					`select ${visibleFeatureJson} from feature_visible where id = $1`,
 					[id]
 				);
-				return rows[0]?.feature as PublicFeature | undefined;
-			}),
+				const feature = rows[0]?.feature as PublicFeature | undefined;
+				if (!includeBoundary || !feature) return feature;
+				const boundary = await boundarySnapshot(c, id);
+				return boundary ? { ...feature, properties: { ...feature.properties, boundary } } : feature;
+			}, includeBoundary),
 
 		saveFeature: (id: number, edit: FeatureEdit) =>
 			run(async (c): Promise<WriteResult> => {
@@ -168,6 +186,20 @@ export function scopedDb(actorId: string) {
 					if (rows[0] && Number(rows[0].feature_id) === id)
 						return { ok: true, id, version: rows[0].version };
 					return { ok: false, reason: 'conflict' };
+				}
+				if (edit.boundary) {
+					const result = await moveBoundary(c, id, edit, edit.boundary);
+					const recorded = result.ok
+						? await c.query('update feature_update set version = $2 where request_key = $1', [
+								edit.key,
+								result.version
+							])
+						: await c.query('delete from feature_update where request_key = $1', [edit.key]);
+					if (recorded.rowCount !== 1)
+						throw Object.assign(new Error('共有境界の更新キーを確定できませんでした'), {
+							code: '42501'
+						});
+					return result;
 				}
 				const updated = await c.query(
 					`update feature set city = $3, name = $4, note = $5, version = version + 1

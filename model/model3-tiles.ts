@@ -2,7 +2,6 @@ import { init, notify, offers, perform, receive, type Edit, type State } from '#
 import type { Step } from './check.ts';
 
 type Version = 0 | 1;
-type Tile = 0 | 1;
 type World = {
 	app: State;
 	db: Version;
